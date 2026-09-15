@@ -1,0 +1,124 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/example/open-webui-gpt-researcher
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  controllerName: ""
+  runnerName: ""
+
+service:
+  type: ClusterIP
+  port: 8090
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: research.example.com
+  path: /v1/research-jobs
+  pathType: Prefix
+  tls: []
+
+config:
+  environment: production
+  databaseUrl: postgresql+asyncpg://research:password@postgresql:5432/research
+  # Optional browser-reachable base URL used only for signed artifact download links.
+  # The API and runners continue to use the ClusterIP Service when this is empty.
+  artifactBaseUrl: ""
+  openwebuiUrl: http://open-webui.open-webui.svc.cluster.local:8080
+  artifactBackend: s3
+  artifactPath: /data/artifacts
+  s3EndpointUrl: https://s3.example.com
+  s3Region: us-east-1
+  s3Bucket: research-artifacts
+  executor: kubernetes
+  engine: gpt-researcher
+  publicSearchEnabled: true
+  modelRoute: openwebui
+  modelProfiles:
+    default: gpt-4.1-mini
+  embeddingModel: sentence-transformers/all-MiniLM-L6-v2
+  maxConcurrentJobs: 5
+  controllerLeaderElection: database
+  # Quoted to preserve all 64 bits through YAML/Helm parsing.
+  controllerLeaderLockId: "7305809465149768307"
+  controllerLeaderRetrySeconds: 5
+  hardMaxInputTokens: 300000
+  hardMaxOutputTokens: 64000
+  hardMaxSearches: 100
+  hardMaxWallTimeSeconds: 7200
+  runner:
+    activeDeadlineSeconds: 7200
+    ttlSecondsAfterFinished: 3600
+    extraEnvSecret: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+secrets:
+  existingSecret: ""
+  create: false
+  serviceToken: ""
+  signingSecret: ""
+  openwebuiApiKey: ""
+  s3AccessKeyId: ""
+  s3SecretAccessKey: ""
+
+api:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+controller:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+  runAsNonRoot: true
+  runAsUser: 10001
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+networkPolicy:
+  enabled: true
+  additionalIngress: []
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

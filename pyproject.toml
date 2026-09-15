@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "open-webui-gpt-researcher"
+version = "0.1.0"
+description = "A multi-user deep-research control plane for Open WebUI and GPT Researcher"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Open WebUI GPT Researcher contributors" }]
+dependencies = [
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
+  "boto3>=1.40,<2",
+  "fastapi>=0.116,<1",
+  "gpt-researcher>=0.14,<1",
+  "httpx>=0.28,<1",
+  "kubernetes-asyncio>=33,<36",
+  "pydantic-settings>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy[asyncio]>=2.0.41,<3",
+  "structlog>=25.4,<26",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.scripts]
+open-webui-gpt-researcher = "open_webui_gpt_researcher.cli:main"
+
+[dependency-groups]
+dev = [
+  "aiosqlite>=0.21,<1",
+  "asgi-lifespan>=2.1,<3",
+  "httpx>=0.28,<1",
+  "mypy>=1.17,<2",
+  "pre-commit>=4.3,<5",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+  "types-boto3[s3]>=1.40,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/open_webui_gpt_researcher"]
+
+[tool.uv]
+required-version = ">=0.11.0,<0.12"
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=open_webui_gpt_researcher --cov-report=term-missing"
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+omit = [
+  "src/open_webui_gpt_researcher/__main__.py",
+  "src/open_webui_gpt_researcher/cli.py",
+  "src/open_webui_gpt_researcher/logging.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "openwebui_functions"]
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "C4", "E", "F", "I", "RUF", "S", "SIM", "UP"]
+ignore = [
+  "COM812",
+  "ISC001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106", "SLF001"]
+"openwebui_functions/*.py" = ["B008"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["open_webui_gpt_researcher"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["gpt_researcher.*", "kubernetes_asyncio.*"]
+ignore_missing_imports = true

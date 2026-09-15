@@ -1,0 +1,126 @@
+name: open-webui-deep-research
+
+x-research-environment: &research-environment
+  RESEARCH_ENVIRONMENT: development
+  RESEARCH_DATABASE_URL: postgresql+asyncpg://research:research@postgres:5432/research
+  RESEARCH_ARTIFACT_BASE_URL: http://localhost:8090
+  RESEARCH_INTERNAL_BASE_URL: http://api:8090
+  RESEARCH_OPENWEBUI_URL: http://open-webui:8080
+  RESEARCH_ARTIFACT_BACKEND: s3
+  RESEARCH_S3_ENDPOINT_URL: http://minio:9000
+  RESEARCH_S3_BUCKET: research-artifacts
+  RESEARCH_EXECUTOR: local
+  RESEARCH_CONTROLLER_LEADER_ELECTION: database
+  RESEARCH_ENGINE: ${RESEARCH_ENGINE:-mock}
+  RESEARCH_PUBLIC_SEARCH_ENABLED: ${RESEARCH_PUBLIC_SEARCH_ENABLED:-true}
+  RESEARCH_MODEL_ROUTE: ${RESEARCH_MODEL_ROUTE:-openwebui}
+  RESEARCH_MODEL_PROFILES: '${RESEARCH_MODEL_PROFILES:-{"default":"gpt-4.1-mini"}}'
+  RESEARCH_EMBEDDING_MODEL: ${RESEARCH_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: research
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: research
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U research -d research"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./dev/postgres/init.sql:/docker-entrypoint-initdb.d/01-openwebui.sql:ro
+    ports:
+      - "5432:5432"
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-secret
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 minio minio-secret
+        && mc mb --ignore-existing local/research-artifacts
+
+  migrate:
+    build: .
+    command: ["migrate"]
+    environment: *research-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: ["api"]
+    environment:
+      <<: *research-environment
+      RESEARCH_SERVICE_TOKEN: ${RESEARCH_SERVICE_TOKEN:-local-service-token-change-before-sharing}
+      RESEARCH_SIGNING_SECRET: ${RESEARCH_SIGNING_SECRET:-local-signing-secret-change-before-sharing-1234}
+      RESEARCH_OPENWEBUI_API_KEY: ${RESEARCH_OPENWEBUI_API_KEY:-}
+      RESEARCH_S3_ACCESS_KEY_ID: minio
+      RESEARCH_S3_SECRET_ACCESS_KEY: minio-secret
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health/ready')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "8090:8090"
+
+  controller:
+    build: .
+    command: ["controller"]
+    environment:
+      <<: *research-environment
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      RETRIEVER: ${RETRIEVER:-tavily}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  open-webui:
+    image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.3}
+    environment:
+      DATABASE_URL: postgresql://research:research@postgres:5432/openwebui
+      WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:-local-open-webui-secret-change-before-sharing}
+      ENABLE_API_KEYS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - openwebui-data:/app/backend/data
+    ports:
+      - "3000:8080"
+
+volumes:
+  minio-data:
+  openwebui-data:
+  postgres-data:

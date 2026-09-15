@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["databaseUrl", "openwebuiUrl"],
+      "properties": {
+        "databaseUrl": {"type": "string", "minLength": 1},
+        "artifactBaseUrl": {"type": "string"},
+        "openwebuiUrl": {"type": "string", "minLength": 1},
+        "publicSearchEnabled": {"type": "boolean"},
+        "maxConcurrentJobs": {"type": "integer", "minimum": 1, "maximum": 100},
+        "controllerLeaderElection": {"enum": ["database", "none"]},
+        "controllerLeaderLockId": {"type": "string", "pattern": "^[0-9]+$"},
+        "controllerLeaderRetrySeconds": {"type": "number", "minimum": 0.5},
+        "hardMaxWallTimeSeconds": {"type": "integer", "minimum": 60, "maximum": 86400}
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "create": {"type": "boolean"}
+      }
+    }
+  },
+  "required": ["image", "config", "secrets"]
+}

@@ -1,0 +1,11 @@
+.git
+.github
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+chart
+docs
+openwebui_functions
+tests
+**/__pycache__
