@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -19,19 +20,29 @@ from open_webui_gpt_researcher.domain import (
     RunnerCompletion,
     RunnerJobSpec,
 )
+from open_webui_gpt_researcher.executors import DispatchStatus
 from open_webui_gpt_researcher.repository import JobRepository
 from open_webui_gpt_researcher.runner import Runner
 
 
 class RecordingExecutor:
-    def __init__(self, error: Exception | None = None) -> None:
-        self.calls: list[tuple[UUID, str]] = []
+    def __init__(
+        self,
+        error: Exception | None = None,
+        status: DispatchStatus = DispatchStatus.MISSING,
+    ) -> None:
+        self.calls: list[tuple[UUID, str, int]] = []
         self.error = error
+        self.status = status
 
-    async def submit(self, *, job_id: UUID, runner_token: str) -> None:
-        self.calls.append((job_id, runner_token))
+    async def submit(self, *, job_id: UUID, runner_token: str, attempt: int) -> None:
+        self.calls.append((job_id, runner_token, attempt))
         if self.error:
             raise self.error
+
+    async def inspect(self, *, job_id: UUID, attempt: int) -> DispatchStatus:
+        del job_id, attempt
+        return self.status
 
 
 async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None:
@@ -53,12 +64,125 @@ async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None
     )
     assert await controller.dispatch_one() is True
     assert executor.calls[0][0] == UUID(job_id)
+    assert executor.calls[0][2] == 1
     async with database.session() as session:
         stored = await session.get(type(job), job_id)
         assert stored is not None
         assert stored.state == JobState.FAILED.value
         assert "scheduler unavailable" in str(stored.error)
     assert await controller.dispatch_one() is False
+    await database.close()
+
+
+async def test_controller_requeues_missing_expired_dispatch(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'reconcile.sqlite'}")
+    await database.create_all()
+    repository = JobRepository()
+    async with database.session() as session, session.begin():
+        job, _ = await repository.create_job(
+            session,
+            user_id="u",
+            idempotency_key="reconcile-test",
+            request=CreateJobRequest(query="Recover dispatch", chat_id="c", message_id="m"),
+        )
+        claim = await repository.claim_next(
+            session,
+            max_concurrent_jobs=5,
+            lease_seconds=120,
+        )
+        assert claim is not None
+        job.dispatch_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    controller = Controller(
+        settings=Settings(database_url="sqlite+aiosqlite://"),
+        database=database,
+        repository=repository,
+        executor=RecordingExecutor(status=DispatchStatus.MISSING),
+    )
+    assert await controller.reconcile_expired_dispatches() == 1
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.state == JobState.PENDING.value
+        assert stored.runner_token_hash is None
+        assert stored.dispatch_lease_expires_at is None
+
+    assert await controller.dispatch_one() is True
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.attempt == 2
+    await database.close()
+
+
+async def test_controller_renews_existing_expired_dispatch(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'renew.sqlite'}")
+    await database.create_all()
+    repository = JobRepository()
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+    async with database.session() as session, session.begin():
+        job, _ = await repository.create_job(
+            session,
+            user_id="u",
+            idempotency_key="renew-test",
+            request=CreateJobRequest(query="Renew dispatch", chat_id="c", message_id="m"),
+        )
+        claim = await repository.claim_next(
+            session,
+            max_concurrent_jobs=5,
+            lease_seconds=120,
+        )
+        assert claim is not None
+        job.dispatch_lease_expires_at = expired
+
+    controller = Controller(
+        settings=Settings(database_url="sqlite+aiosqlite://"),
+        database=database,
+        repository=repository,
+        executor=RecordingExecutor(status=DispatchStatus.ACTIVE),
+    )
+    assert await controller.reconcile_expired_dispatches() == 1
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.state == JobState.DISPATCHED.value
+        assert stored.dispatch_lease_expires_at is not None
+        assert stored.dispatch_lease_expires_at > expired.replace(tzinfo=None)
+    await database.close()
+
+
+async def test_controller_finishes_cancelled_missing_dispatch(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cancel-reconcile.sqlite'}")
+    await database.create_all()
+    repository = JobRepository()
+    async with database.session() as session, session.begin():
+        job, _ = await repository.create_job(
+            session,
+            user_id="u",
+            idempotency_key="cancel-reconcile-test",
+            request=CreateJobRequest(query="Cancel dispatch", chat_id="c", message_id="m"),
+        )
+        claim = await repository.claim_next(
+            session,
+            max_concurrent_jobs=5,
+            lease_seconds=120,
+        )
+        assert claim is not None
+        await repository.request_cancel(session, job_id=UUID(job.id), user_id="u")
+        job.dispatch_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    controller = Controller(
+        settings=Settings(database_url="sqlite+aiosqlite://"),
+        database=database,
+        repository=repository,
+        executor=RecordingExecutor(status=DispatchStatus.MISSING),
+    )
+    assert await controller.reconcile_expired_dispatches() == 1
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.state == JobState.CANCELLED.value
+        assert stored.finished_at is not None
     await database.close()
 
 
@@ -180,7 +304,7 @@ class SlowEngine:
 async def test_runner_completes_and_configures_budgets(monkeypatch: Any) -> None:
     client = FakeRunnerClient()
     settings = Settings(model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
-    monkeypatch.setenv("RESEARCH_INTERNAL_BASE_URL", "http://api")
+    monkeypatch.setenv("INTERNAL_BASE_URL", "http://api")
     await Runner(settings=settings, client=client, engine=InstantEngine()).run()  # type: ignore[arg-type]
     assert client.was_started and client.was_closed
     assert client.completion is not None

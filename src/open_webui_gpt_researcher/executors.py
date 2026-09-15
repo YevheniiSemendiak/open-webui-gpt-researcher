@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import os
 import sys
 from dataclasses import dataclass
@@ -8,43 +9,65 @@ from typing import Protocol
 from uuid import UUID
 
 from kubernetes_asyncio import client, config
+from kubernetes_asyncio.client.exceptions import ApiException
 
 from .config import Settings
 
 
+class DispatchStatus(enum.StrEnum):
+    MISSING = "missing"
+    ACTIVE = "active"
+    EXITED = "exited"
+
+
 class Executor(Protocol):
-    async def submit(self, *, job_id: UUID, runner_token: str) -> None: ...
+    async def submit(self, *, job_id: UUID, runner_token: str, attempt: int) -> None: ...
+
+    async def inspect(self, *, job_id: UUID, attempt: int) -> DispatchStatus: ...
 
 
 @dataclass
 class LocalProcessExecutor:
     settings: Settings
 
-    async def submit(self, *, job_id: UUID, runner_token: str) -> None:
+    def __post_init__(self) -> None:
+        self._processes: dict[tuple[UUID, int], asyncio.subprocess.Process] = {}
+
+    async def submit(self, *, job_id: UUID, runner_token: str, attempt: int) -> None:
         environment = dict(os.environ)
         for secret_name in (
-            "RESEARCH_DATABASE_URL",
-            "RESEARCH_OPENWEBUI_API_KEY",
-            "RESEARCH_S3_ACCESS_KEY_ID",
-            "RESEARCH_S3_SECRET_ACCESS_KEY",
-            "RESEARCH_SERVICE_TOKEN",
-            "RESEARCH_SIGNING_SECRET",
+            "DATABASE_URL",
+            "OPENWEBUI_API_KEY",
+            "S3_ACCESS_KEY_ID",
+            "S3_SECRET_ACCESS_KEY",
+            "SERVICE_TOKEN",
+            "SIGNING_SECRET",
         ):
             environment.pop(secret_name, None)
         environment.update(
             {
-                "RESEARCH_JOB_ID": str(job_id),
-                "RESEARCH_RUNNER_TOKEN": runner_token,
-                "RESEARCH_INTERNAL_BASE_URL": self.settings.internal_base_url,
+                "JOB_ID": str(job_id),
+                "RUNNER_TOKEN": runner_token,
+                "INTERNAL_BASE_URL": self.settings.internal_base_url,
             }
         )
-        await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
             "open_webui_gpt_researcher.cli",
             "runner",
             env=environment,
         )
+        self._processes[(job_id, attempt)] = process
+
+    async def inspect(self, *, job_id: UUID, attempt: int) -> DispatchStatus:
+        process = self._processes.get((job_id, attempt))
+        if process is None:
+            return DispatchStatus.MISSING
+        if process.returncode is None:
+            return DispatchStatus.ACTIVE
+        self._processes.pop((job_id, attempt), None)
+        return DispatchStatus.EXITED
 
 
 class KubernetesJobExecutor:
@@ -85,30 +108,35 @@ class KubernetesJobExecutor:
         )
         return self._owner_reference
 
-    async def submit(self, *, job_id: UUID, runner_token: str) -> None:
+    @staticmethod
+    def _job_name(job_id: UUID, attempt: int) -> str:
+        return f"deep-research-{job_id}-{attempt}"
+
+    async def submit(self, *, job_id: UUID, runner_token: str, attempt: int) -> None:
         await self._configure()
         settings = self.settings
-        name = f"deep-research-{str(job_id)[:8]}"
+        name = self._job_name(job_id, attempt)
         owner_reference = await self._get_owner_reference()
         labels = {
             "app.kubernetes.io/name": "open-webui-gpt-researcher",
             "app.kubernetes.io/component": "runner",
             "job-id": str(job_id),
+            "job-attempt": str(attempt),
         }
         environment = [
-            client.V1EnvVar(name="RESEARCH_JOB_ID", value=str(job_id)),
-            client.V1EnvVar(name="RESEARCH_RUNNER_TOKEN", value=runner_token),
-            client.V1EnvVar(name="RESEARCH_INTERNAL_BASE_URL", value=settings.internal_base_url),
+            client.V1EnvVar(name="JOB_ID", value=str(job_id)),
+            client.V1EnvVar(name="RUNNER_TOKEN", value=runner_token),
+            client.V1EnvVar(name="INTERNAL_BASE_URL", value=settings.internal_base_url),
             client.V1EnvVar(
-                name="RESEARCH_PUBLIC_SEARCH_ENABLED",
+                name="PUBLIC_SEARCH_ENABLED",
                 value=str(settings.public_search_enabled).lower(),
             ),
-            client.V1EnvVar(name="RESEARCH_MODEL_ROUTE", value=settings.model_route),
+            client.V1EnvVar(name="MODEL_ROUTE", value=settings.model_route),
             client.V1EnvVar(
-                name="RESEARCH_MODEL_PROFILES",
+                name="MODEL_PROFILES",
                 value=str(settings.model_profiles).replace("'", '"'),
             ),
-            client.V1EnvVar(name="RESEARCH_EMBEDDING_MODEL", value=settings.embedding_model),
+            client.V1EnvVar(name="EMBEDDING_MODEL", value=settings.embedding_model),
         ]
         env_from = []
         if settings.runner_extra_env_secret:
@@ -169,7 +197,27 @@ class KubernetesJobExecutor:
             ),
         )
         api = client.BatchV1Api()
-        await api.create_namespaced_job(namespace=settings.runner_namespace, body=job)
+        try:
+            await api.create_namespaced_job(namespace=settings.runner_namespace, body=job)
+        except ApiException as error:
+            if error.status != 409:
+                raise
+
+    async def inspect(self, *, job_id: UUID, attempt: int) -> DispatchStatus:
+        await self._configure()
+        try:
+            job = await client.BatchV1Api().read_namespaced_job(
+                name=self._job_name(job_id, attempt),
+                namespace=self.settings.runner_namespace,
+            )
+        except ApiException as error:
+            if error.status == 404:
+                return DispatchStatus.MISSING
+            raise
+        status = job.status
+        if status is not None and ((status.failed or 0) > 0 or (status.succeeded or 0) > 0):
+            return DispatchStatus.EXITED
+        return DispatchStatus.ACTIVE
 
 
 def make_executor(settings: Settings) -> Executor:

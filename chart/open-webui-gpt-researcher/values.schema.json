@@ -14,9 +14,8 @@
     },
     "config": {
       "type": "object",
-      "required": ["databaseUrl", "openwebuiUrl", "mode"],
+      "required": ["openwebuiUrl", "mode"],
       "properties": {
-        "databaseUrl": {"type": "string", "minLength": 1},
         "artifactBaseUrl": {"type": "string"},
         "openwebuiUrl": {"type": "string", "minLength": 1},
         "publicSearchEnabled": {"type": "boolean"},
@@ -24,14 +23,35 @@
         "mode": {"enum": ["local", "k8s"]},
         "controllerLeaderLockId": {"type": "string", "pattern": "^[0-9]+$"},
         "controllerLeaderRetrySeconds": {"type": "number", "minimum": 0.5},
+        "dispatchLeaseSeconds": {"type": "integer", "minimum": 10, "maximum": 3600},
+        "dispatchReconcileBatchSize": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "eventRetentionDays": {"type": "integer", "minimum": 1, "maximum": 3650},
+        "artifactRetentionDays": {"type": "integer", "minimum": 1, "maximum": 3650},
+        "jobRetentionDays": {"type": "integer", "minimum": 1, "maximum": 3650},
+        "orphanGraceSeconds": {"type": "integer", "minimum": 3600, "maximum": 2592000},
+        "cleanupBatchSize": {"type": "integer", "minimum": 1, "maximum": 10000},
         "hardMaxWallTimeSeconds": {"type": "integer", "minimum": 60, "maximum": 86400}
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["secretKey"],
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "secretKey": {"type": "string", "minLength": 1}
       }
     },
     "secrets": {
       "type": "object",
       "properties": {
         "existingSecret": {"type": "string"},
-        "create": {"type": "boolean"}
+        "create": {"type": "boolean"},
+        "databaseUrl": {"type": "string"},
+        "serviceToken": {"type": "string"},
+        "signingSecret": {"type": "string"},
+        "openwebuiApiKey": {"type": "string"},
+        "s3AccessKeyId": {"type": "string"},
+        "s3SecretAccessKey": {"type": "string"}
       }
     },
     "functionSync": {
@@ -41,7 +61,18 @@
         "backoffLimit": {"type": "integer", "minimum": 0},
         "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
       }
+    },
+    "cleanup": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "schedule": {"type": "string", "minLength": 1},
+        "backoffLimit": {"type": "integer", "minimum": 0},
+        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
+        "successfulJobsHistoryLimit": {"type": "integer", "minimum": 0},
+        "failedJobsHistoryLimit": {"type": "integer", "minimum": 0}
+      }
     }
   },
-  "required": ["image", "config", "secrets"]
+  "required": ["image", "config", "database", "secrets"]
 }

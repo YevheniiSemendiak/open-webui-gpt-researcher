@@ -2349,7 +2349,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30,<1" },
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "fastapi", specifier = ">=0.116,<1" },
-    { name = "gpt-researcher", specifier = ">=0.14,<1" },
+    { name = "gpt-researcher", specifier = "==0.16.0" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "kubernetes-asyncio", specifier = ">=33,<36" },
     { name = "pydantic-settings", specifier = ">=2.10,<3" },

@@ -9,7 +9,8 @@ import uvicorn
 from alembic import command
 from alembic.config import Config
 
-from .api import create_app
+from .api import create_app, make_artifact_store
+from .cleanup import RetentionCleaner
 from .config import get_settings
 from .controller import Controller
 from .db import Database
@@ -30,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("controller")
     subparsers.add_parser("runner")
     subparsers.add_parser("migrate")
+    subparsers.add_parser("cleanup")
     sync = subparsers.add_parser("sync-functions")
     sync.add_argument("--if-configured", action="store_true")
     return parser.parse_args()
@@ -55,10 +57,10 @@ async def run_controller() -> None:
 async def run_runner() -> None:
     settings = get_settings()
     try:
-        job_id = UUID(os.environ["RESEARCH_JOB_ID"])
-        runner_token = os.environ["RESEARCH_RUNNER_TOKEN"]
+        job_id = UUID(os.environ["JOB_ID"])
+        runner_token = os.environ["RUNNER_TOKEN"]
     except (KeyError, ValueError) as error:
-        raise SystemExit("RESEARCH_JOB_ID and RESEARCH_RUNNER_TOKEN are required") from error
+        raise SystemExit("JOB_ID and RUNNER_TOKEN are required") from error
     client = RunnerClient(
         base_url=settings.internal_base_url,
         job_id=job_id,
@@ -83,12 +85,26 @@ async def sync_functions(*, if_configured: bool = False) -> None:
     if not settings.openwebui_api_key.get_secret_value():
         if if_configured:
             return
-        raise SystemExit("RESEARCH_OPENWEBUI_API_KEY is required to sync Functions")
+        raise SystemExit("OPENWEBUI_API_KEY is required to sync Functions")
     sync = FunctionSync(settings)
     try:
         await sync.run()
     finally:
         await sync.close()
+
+
+async def run_cleanup() -> None:
+    settings = get_settings()
+    database = Database(settings.database_url)
+    try:
+        await RetentionCleaner(
+            settings=settings,
+            database=database,
+            repository=JobRepository(),
+            artifact_store=make_artifact_store(settings),
+        ).run()
+    finally:
+        await database.close()
 
 
 def main() -> None:
@@ -103,6 +119,8 @@ def main() -> None:
         asyncio.run(run_runner())
     elif args.command == "migrate":
         run_migrations()
+    elif args.command == "cleanup":
+        asyncio.run(run_cleanup())
     else:
         asyncio.run(sync_functions(if_configured=args.if_configured))
 

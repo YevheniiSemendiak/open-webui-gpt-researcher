@@ -34,10 +34,10 @@ build:
 lock:
 	uv lock
 
-compose-up:
+run:
 	docker compose up --build
 
-compose-down:
+stop:
 	docker compose down
 
 helm-lint:

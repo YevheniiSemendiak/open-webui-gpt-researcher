@@ -20,6 +20,10 @@ Asynchronous, multi-user deep research for
   a random per-job credential.
 - Function installation is an idempotent, targeted Open WebUI API sync. It does not delete or
   replace unrelated Functions.
+- Dispatch uses expiring database leases and attempt-specific runner identities. The elected
+  controller reconciles missing or existing workloads after a crash.
+- Retention is enforced by a scheduled cleanup command for events, reports, jobs, and orphaned
+  artifact objects.
 - Runtime Jobs are owned by the controller Deployment; runner Pods are owned by their Job. Argo CD
   therefore shows Deployment → Job → Pod in the application resource tree.
 - The gateway stays cluster-internal unless direct artifact downloads are enabled.
@@ -50,7 +54,7 @@ throughout research.
 
 ### Local
 
-`RESEARCH_MODE=local` runs API, queue dispatcher, and runner subprocesses in one researcher
+`MODE=local` runs API, queue dispatcher, and runner subprocesses in one researcher
 container. PostgreSQL, MinIO, and Open WebUI remain separate Compose services. This executes the
 real GPT Researcher package and is intended for development and integration tests.
 
@@ -67,6 +71,16 @@ transaction-pooling proxy.
 Each run is an isolated Kubernetes Job with resource limits, deadline, scoped credential, and TTL.
 The Job owns its Pod and is owned by the stable controller Deployment. A normal controller rollout
 preserves the Deployment UID; deleting/recreating it garbage-collects active Jobs.
+
+Dispatch claims have a short PostgreSQL lease. Runner Job names include both the research ID and
+attempt number. If leadership changes before a runner starts, the next leader checks that exact
+workload, renews an existing dispatch, or requeues a missing dispatch with a fresh credential.
+
+## Compatibility
+
+The `0.1.0` release line is pinned to GPT Researcher `0.16.0` and targets Open WebUI `v0.11.3`.
+These versions are the compatibility baseline for integration testing; upgrades must update the
+pin and pass the Compose and Kubernetes acceptance suites before release.
 
 ## Kubernetes installation
 
@@ -89,6 +103,7 @@ metadata:
   namespace: research
 type: Opaque
 stringData:
+  database-url: "postgresql+asyncpg://..."
   service-token: "..."
   signing-secret: "..."
   openwebui-api-key: "..."
@@ -103,7 +118,6 @@ helm upgrade --install research ./chart/open-webui-gpt-researcher \
   --namespace research --create-namespace \
   --set image.repository=ghcr.io/OWNER/open-webui-gpt-researcher \
   --set image.tag=0.1.0 \
-  --set config.databaseUrl='postgresql+asyncpg://...' \
   --set config.openwebuiUrl='http://open-webui.open-webui.svc.cluster.local:8080' \
   --set config.s3EndpointUrl='https://s3.example.com' \
   --set config.s3Bucket='research-artifacts' \
@@ -144,7 +158,6 @@ spec:
         imagePullSecrets:
           - name: ghcr-pull
         config:
-          databaseUrl: postgresql+asyncpg://research:password@postgresql:5432/research
           openwebuiUrl: http://open-webui.open-webui.svc.cluster.local:8080
           s3EndpointUrl: https://s3.example.com
           s3Bucket: research-artifacts
@@ -198,6 +211,10 @@ other namespaces.
 Search/provider credentials used only by runners belong in the Secret named by
 `config.runner.extraEnvSecret`; never put the Open WebUI API key there.
 
+`DATABASE_URL` is always read from a Secret. By default the chart uses the `database-url` key in
+`secrets.existingSecret`. Set `database.existingSecret` and `database.secretKey` to use a separate
+injected database Secret.
+
 ## Local installation
 
 ```bash
@@ -209,9 +226,9 @@ Open <http://localhost:3000>, create the first administrator and a dedicated int
 then generate its API key. Configure `.env`:
 
 ```dotenv
-RESEARCH_OPENWEBUI_API_KEY=...
-RESEARCH_MODEL_PROFILES={"default":"model-id-visible-in-openwebui"}
-RESEARCH_PUBLIC_SEARCH_ENABLED=true
+OPENWEBUI_API_KEY=...
+MODEL_PROFILES={"default":"model-id-visible-in-openwebui"}
+PUBLIC_SEARCH_ENABLED=true
 RETRIEVER=tavily
 TAVILY_API_KEY=...
 ```
@@ -229,7 +246,7 @@ gateway API at <http://localhost:8090/docs>, and MinIO Console at <http://localh
 For private-only research:
 
 ```dotenv
-RESEARCH_PUBLIC_SEARCH_ENABLED=false
+PUBLIC_SEARCH_ENABLED=false
 TAVILY_API_KEY=
 ```
 
@@ -253,8 +270,19 @@ and wall time. Users can refine per-run values; the gateway validates them. With
 WebUI model route, the gateway accounts provider-reported tokens and clamps subsequent calls.
 
 Job state and ordered events are durable in PostgreSQL. API replicas are stateless. Controller
-leadership survives pod loss, but the narrow crash window between committing `dispatched` and
-creating the Kubernetes Job still needs reconciliation; see [docs/roadmap.md](docs/roadmap.md).
+leadership and dispatch recovery survive pod loss through PostgreSQL advisory locks and expiring
+dispatch leases.
+
+The cleanup CronJob runs hourly by default. It removes terminal-job events after 30 days, artifacts
+after 90 days, and terminal jobs after 90 days. It also deletes unreferenced objects under `jobs/`
+after a 24-hour safety window. Configure `config.eventRetentionDays`,
+`config.artifactRetentionDays`, `config.jobRetentionDays`, `config.orphanGraceSeconds`, and
+`config.cleanupBatchSize`; job retention cannot be shorter than artifact retention. For local
+maintenance, run `docker compose run --rm cleanup`.
+
+Runtime settings use direct uppercase field names without an application prefix: for example,
+`DATABASE_URL`, `OPENWEBUI_URL`, `PUBLIC_SEARCH_ENABLED`, `MODEL_PROFILES`, `JOB_ID`, and
+`RUNNER_TOKEN`.
 
 Runtime Jobs deliberately do not copy Argo CD's tracking annotation: they are dependent live
 resources, not Git-desired manifests.

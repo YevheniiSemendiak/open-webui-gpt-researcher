@@ -48,7 +48,9 @@ async def test_job_lifecycle_and_artifact_download(
     assert duplicate.json()["id"] == job_id
 
     async with app.state.database.session() as session, session.begin():
-        claim = await app.state.repository.claim_next(session, max_concurrent_jobs=5)
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
     assert claim is not None
     runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
 
@@ -149,7 +151,9 @@ async def test_runner_failure_events_and_private_search_budget(
     created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
     job_id = created.json()["id"]
     async with app.state.database.session() as session, session.begin():
-        claim = await app.state.repository.claim_next(session, max_concurrent_jobs=5)
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
     assert claim is not None
     runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
     assert (await client.get(f"/internal/jobs/{job_id}", headers=runner_headers)).status_code == 200
@@ -188,11 +192,15 @@ async def test_running_job_cancel_handshake(
     created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
     job_id = created.json()["id"]
     async with app.state.database.session() as session, session.begin():
-        claim = await app.state.repository.claim_next(session, max_concurrent_jobs=5)
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
     assert claim is not None
     runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
     cancelled = await client.post(f"/v1/research-jobs/{job_id}:cancel", headers=service_headers)
     assert cancelled.json()["state"] == "cancel_requested"
+    started = await client.post(f"/internal/jobs/{job_id}/started", headers=runner_headers)
+    assert started.json() == {"state": "cancel_requested"}
     state = await client.get(f"/internal/jobs/{job_id}/state", headers=runner_headers)
     assert state.json() == {"state": "cancel_requested"}
     acknowledged = await client.post(f"/internal/jobs/{job_id}/cancelled", headers=runner_headers)
@@ -208,7 +216,9 @@ async def test_model_and_embedding_proxies_account_usage(
     created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
     job_id = created.json()["id"]
     async with app.state.database.session() as session, session.begin():
-        claim = await app.state.repository.claim_next(session, max_concurrent_jobs=5)
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
     assert claim is not None
     runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
     app.state.openwebui.proxy_chat_completions = AsyncMock(
@@ -252,7 +262,9 @@ async def test_explicit_save_to_new_knowledge(
     created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
     job_id = created.json()["id"]
     async with app.state.database.session() as session, session.begin():
-        claim = await app.state.repository.claim_next(session, max_concurrent_jobs=5)
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
     assert claim is not None
     runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
     await client.post(f"/internal/jobs/{job_id}/started", headers=runner_headers)

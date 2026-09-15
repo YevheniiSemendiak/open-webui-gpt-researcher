@@ -37,6 +37,12 @@ def test_settings_validate_budget_and_profile() -> None:
         settings.validate_budget(ResearchBudget(max_searches=101))
 
 
+def test_settings_use_direct_environment_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///direct.sqlite")
+    settings = Settings(_env_file=None)
+    assert settings.database_url == "sqlite+aiosqlite:///direct.sqlite"
+
+
 async def test_gpt_researcher_adapter_merges_private_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -182,9 +188,9 @@ def test_openwebui_retriever_maps_private_passages(
                 }
             ]
 
-    monkeypatch.setenv("RESEARCH_INTERNAL_BASE_URL", "http://api")
-    monkeypatch.setenv("RESEARCH_JOB_ID", str(uuid4()))
-    monkeypatch.setenv("RESEARCH_RUNNER_TOKEN", "token")
+    monkeypatch.setenv("INTERNAL_BASE_URL", "http://api")
+    monkeypatch.setenv("JOB_ID", str(uuid4()))
+    monkeypatch.setenv("RUNNER_TOKEN", "token")
     monkeypatch.setattr("httpx.post", lambda *args, **kwargs: Response())
     result = OpenWebUIRetriever("sub-query").search()
     assert result[0]["raw_content"] == "private passage"

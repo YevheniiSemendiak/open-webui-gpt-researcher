@@ -2,11 +2,7 @@
 
 ## Before the first production rollout
 
-- Pin and qualify an exact Open WebUI and GPT Researcher compatibility matrix.
-- Add a dispatch lease/reconciler for the crash window between committing `dispatched` and creating
-  the Kubernetes Job.
 - Add integration tests against real Open WebUI, PostgreSQL, MinIO, and a Kubernetes test cluster.
-- Define retention jobs for database events, generated artifacts, and orphaned object keys.
 - Add metrics, traces, audit events, and dashboards for queue age, runtime, failures, tokens, and
   retriever activity.
 - Perform prompt-injection and cross-user authorization testing with realistic Knowledge data.

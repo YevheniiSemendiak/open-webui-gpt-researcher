@@ -4,14 +4,16 @@ import hashlib
 import json
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import ResearchArtifact, ResearchEvent, ResearchJob
 from .domain import (
+    TERMINAL_STATES,
     CreateJobRequest,
     JobEventView,
     JobState,
@@ -48,6 +50,14 @@ def request_digest(request: CreateJobRequest) -> str:
 class ClaimedJob:
     id: UUID
     runner_token: str
+    attempt: int
+
+
+@dataclass(frozen=True)
+class ExpiredDispatch:
+    id: UUID
+    attempt: int
+    state: JobState
 
 
 class JobRepository:
@@ -126,7 +136,11 @@ class JobRepository:
         return job
 
     async def claim_next(
-        self, session: AsyncSession, *, max_concurrent_jobs: int
+        self,
+        session: AsyncSession,
+        *,
+        max_concurrent_jobs: int,
+        lease_seconds: int,
     ) -> ClaimedJob | None:
         active = await session.scalar(
             select(func.count())
@@ -154,13 +168,88 @@ class JobRepository:
         if job is None:
             return None
 
+        now = datetime.now(UTC)
         token = secrets.token_urlsafe(32)
         job.runner_token_hash = hash_token(token)
         job.state = JobState.DISPATCHED.value
         job.attempt += 1
-        job.updated_at = datetime.now(UTC)
+        job.dispatch_lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.updated_at = now
         await self._append_event_locked(session, job, "job.dispatched", {"attempt": job.attempt})
-        return ClaimedJob(id=UUID(job.id), runner_token=token)
+        return ClaimedJob(id=UUID(job.id), runner_token=token, attempt=job.attempt)
+
+    async def list_expired_dispatches(
+        self, session: AsyncSession, *, limit: int
+    ) -> list[ExpiredDispatch]:
+        now = datetime.now(UTC)
+        jobs = (
+            await session.scalars(
+                select(ResearchJob)
+                .where(
+                    ResearchJob.state.in_(
+                        [JobState.DISPATCHED.value, JobState.CANCEL_REQUESTED.value]
+                    ),
+                    ResearchJob.started_at.is_(None),
+                    ResearchJob.dispatch_lease_expires_at.is_not(None),
+                    ResearchJob.dispatch_lease_expires_at <= now,
+                )
+                .order_by(ResearchJob.dispatch_lease_expires_at)
+                .limit(limit)
+            )
+        ).all()
+        return [
+            ExpiredDispatch(id=UUID(job.id), attempt=job.attempt, state=JobState(job.state))
+            for job in jobs
+        ]
+
+    async def reconcile_expired_dispatch(
+        self,
+        session: AsyncSession,
+        *,
+        dispatch: ExpiredDispatch,
+        action: Literal["renew", "requeue", "fail", "cancel"],
+        lease_seconds: int,
+        error: str = "",
+    ) -> bool:
+        job = await session.scalar(
+            select(ResearchJob)
+            .where(
+                ResearchJob.id == str(dispatch.id),
+                ResearchJob.attempt == dispatch.attempt,
+                ResearchJob.state.in_([JobState.DISPATCHED.value, JobState.CANCEL_REQUESTED.value]),
+                ResearchJob.started_at.is_(None),
+            )
+            .with_for_update()
+        )
+        if job is None:
+            return False
+
+        now = datetime.now(UTC)
+        if action == "renew":
+            job.dispatch_lease_expires_at = now + timedelta(seconds=lease_seconds)
+            job.updated_at = now
+            return True
+
+        if job.state == JobState.CANCEL_REQUESTED.value:
+            job.state = JobState.CANCELLED.value
+            job.finished_at = now
+            event_type = "job.cancelled"
+            data: dict[str, object] = {"reason": "dispatch reconciliation"}
+        elif action == "requeue":
+            job.state = JobState.PENDING.value
+            job.runner_token_hash = None
+            event_type = "job.dispatch_requeued"
+            data = {"attempt": job.attempt}
+        else:
+            job.state = JobState.FAILED.value
+            job.error = error[:20_000] or "runner exited before reporting its state"
+            job.finished_at = now
+            event_type = "job.failed"
+            data = {"error": job.error}
+        job.dispatch_lease_expires_at = None
+        job.updated_at = now
+        await self._append_event_locked(session, job, event_type, data)
+        return True
 
     async def list_events(
         self,
@@ -202,11 +291,15 @@ class JobRepository:
         self, session: AsyncSession, *, job_id: UUID, runner_token: str
     ) -> ResearchJob:
         job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
-        if JobState(job.state) not in {JobState.DISPATCHED, JobState.RUNNING}:
+        state = JobState(job.state)
+        if state not in {JobState.DISPATCHED, JobState.RUNNING, JobState.CANCEL_REQUESTED}:
             raise InvalidStateError(f"cannot start job in state {job.state}")
-        if job.state != JobState.RUNNING.value:
+        if state == JobState.CANCEL_REQUESTED:
+            return job
+        if state != JobState.RUNNING:
             now = datetime.now(UTC)
             job.state = JobState.RUNNING.value
+            job.dispatch_lease_expires_at = None
             job.started_at = now
             job.updated_at = now
             await self._append_event_locked(session, job, "job.started", {})
@@ -238,6 +331,8 @@ class JobRepository:
             raise InvalidStateError(f"cannot cancel job in state {job.state}")
         job.state = JobState.CANCELLED.value
         job.finished_at = datetime.now(UTC)
+        job.updated_at = job.finished_at
+        job.dispatch_lease_expires_at = None
         await self._append_event_locked(session, job, "job.cancelled", {})
         return job
 
@@ -255,6 +350,8 @@ class JobRepository:
         job.state = JobState.FAILED.value
         job.error = error[:20_000]
         job.finished_at = datetime.now(UTC)
+        job.updated_at = job.finished_at
+        job.dispatch_lease_expires_at = None
         await self._append_event_locked(session, job, "job.failed", {"error": job.error})
         return job
 
@@ -276,6 +373,8 @@ class JobRepository:
         job.result = result
         job.usage = {**(job.usage or {}), **completion.usage}
         job.finished_at = datetime.now(UTC)
+        job.updated_at = job.finished_at
+        job.dispatch_lease_expires_at = None
         await self._append_event_locked(session, job, "job.succeeded", result)
         return job
 
@@ -333,6 +432,67 @@ class JobRepository:
         if artifact is None:
             raise JobNotFoundError
         return artifact
+
+    async def list_expired_artifacts(
+        self, session: AsyncSession, *, cutoff: datetime, limit: int
+    ) -> list[ResearchArtifact]:
+        return list(
+            (
+                await session.scalars(
+                    select(ResearchArtifact)
+                    .join(ResearchJob, ResearchArtifact.job_id == ResearchJob.id)
+                    .where(
+                        ResearchJob.state.in_([state.value for state in TERMINAL_STATES]),
+                        ResearchJob.finished_at.is_not(None),
+                        ResearchJob.finished_at < cutoff,
+                    )
+                    .order_by(ResearchArtifact.id)
+                    .limit(limit)
+                )
+            ).all()
+        )
+
+    async def delete_artifact_record(self, session: AsyncSession, *, artifact_id: int) -> bool:
+        result = await session.execute(
+            delete(ResearchArtifact).where(ResearchArtifact.id == artifact_id)
+        )
+        return bool(getattr(result, "rowcount", 0))
+
+    async def delete_expired_events(
+        self, session: AsyncSession, *, cutoff: datetime, limit: int
+    ) -> int:
+        event_ids = (
+            select(ResearchEvent.id)
+            .join(ResearchJob, ResearchEvent.job_id == ResearchJob.id)
+            .where(
+                ResearchEvent.created_at < cutoff,
+                ResearchJob.state.in_([state.value for state in TERMINAL_STATES]),
+            )
+            .order_by(ResearchEvent.id)
+            .limit(limit)
+        )
+        result = await session.execute(delete(ResearchEvent).where(ResearchEvent.id.in_(event_ids)))
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def delete_expired_jobs(
+        self, session: AsyncSession, *, cutoff: datetime, limit: int
+    ) -> int:
+        job_ids = (
+            select(ResearchJob.id)
+            .where(
+                ResearchJob.state.in_([state.value for state in TERMINAL_STATES]),
+                ResearchJob.finished_at.is_not(None),
+                ResearchJob.finished_at < cutoff,
+                ~exists().where(ResearchArtifact.job_id == ResearchJob.id),
+            )
+            .order_by(ResearchJob.finished_at)
+            .limit(limit)
+        )
+        result = await session.execute(delete(ResearchJob).where(ResearchJob.id.in_(job_ids)))
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def list_artifact_keys(self, session: AsyncSession) -> set[str]:
+        return set((await session.scalars(select(ResearchArtifact.object_key))).all())
 
     async def _append_event_locked(
         self,

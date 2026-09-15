@@ -25,9 +25,9 @@ class OpenWebUIRetriever:
     def search(self, max_results: int = 5) -> list[dict[str, object]]:
         import httpx
 
-        base_url = os.environ["RESEARCH_INTERNAL_BASE_URL"].rstrip("/")
-        job_id = os.environ["RESEARCH_JOB_ID"]
-        token = os.environ["RESEARCH_RUNNER_TOKEN"]
+        base_url = os.environ["INTERNAL_BASE_URL"].rstrip("/")
+        job_id = os.environ["JOB_ID"]
+        token = os.environ["RUNNER_TOKEN"]
         response = httpx.post(
             f"{base_url}/internal/jobs/{job_id}/search",
             headers={"Authorization": f"Bearer {token}"},

@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .domain import ResearchBudget
@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     """Runtime configuration shared by API, controller, and runners."""
 
     model_config = SettingsConfigDict(
-        env_prefix="RESEARCH_",
+        env_prefix="",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     controller_poll_seconds: float = Field(default=2.0, ge=0.1)
     controller_leader_lock_id: int = 7_305_809_465_149_768_307
     controller_leader_retry_seconds: float = Field(default=5.0, ge=0.5)
+    dispatch_lease_seconds: int = Field(default=120, ge=10, le=3_600)
+    dispatch_reconcile_batch_size: int = Field(default=100, ge=1, le=10_000)
     max_concurrent_jobs: int = Field(default=5, ge=1, le=100)
     public_search_enabled: bool = True
     model_route: Literal["openwebui", "direct"] = "openwebui"
@@ -71,13 +73,26 @@ class Settings(BaseSettings):
 
     download_token_ttl_seconds: int = Field(default=604_800, ge=60, le=2_592_000)
 
+    event_retention_days: int = Field(default=30, ge=1, le=3_650)
+    artifact_retention_days: int = Field(default=90, ge=1, le=3_650)
+    job_retention_days: int = Field(default=90, ge=1, le=3_650)
+    orphan_grace_seconds: int = Field(default=86_400, ge=3_600, le=2_592_000)
+    cleanup_batch_size: int = Field(default=100, ge=1, le=10_000)
+
+    @model_validator(mode="after")
+    def validate_retention_order(self) -> Settings:
+        if self.job_retention_days < self.artifact_retention_days:
+            msg = "JOB_RETENTION_DAYS must be greater than or equal to ARTIFACT_RETENTION_DAYS"
+            raise ValueError(msg)
+        return self
+
     def validate_api_secrets(self) -> None:
         if self.environment != "development":
             if self.service_token.get_secret_value().startswith("change-me"):
-                msg = "RESEARCH_SERVICE_TOKEN must be configured outside development"
+                msg = "SERVICE_TOKEN must be configured outside development"
                 raise ValueError(msg)
             if self.signing_secret.get_secret_value().startswith("change-me"):
-                msg = "RESEARCH_SIGNING_SECRET must be configured outside development"
+                msg = "SIGNING_SECRET must be configured outside development"
                 raise ValueError(msg)
 
     def validate_budget(self, budget: ResearchBudget) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,21 @@ async def test_s3_artifact_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
             assert kwargs["Key"] == "jobs/id/report.md"
             return {"Body": Body()}
 
+        def delete_object(self, **kwargs: object) -> None:
+            self.deleted = kwargs
+
+        def list_objects_v2(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["Prefix"] == "jobs/"
+            return {
+                "Contents": [
+                    {
+                        "Key": "jobs/id/report.md",
+                        "LastModified": datetime(2025, 1, 1, tzinfo=UTC),
+                    }
+                ],
+                "IsTruncated": False,
+            }
+
     client = Client()
     monkeypatch.setattr("boto3.client", lambda *_args, **_kwargs: client)
     store = S3ArtifactStore(
@@ -71,3 +87,6 @@ async def test_s3_artifact_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.size == 6
     assert client.put["Bucket"] == "bucket"
     assert await store.get(result.object_key) == b"stored"
+    assert (await store.list_objects("jobs"))[0].object_key == "jobs/id/report.md"
+    await store.delete(result.object_key)
+    assert client.deleted["Key"] == "jobs/id/report.md"

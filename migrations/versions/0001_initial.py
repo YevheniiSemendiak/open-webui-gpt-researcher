@@ -29,6 +29,7 @@ def upgrade() -> None:
         sa.Column("state", sa.String(32), nullable=False),
         sa.Column("runner_token_hash", sa.String(64), nullable=True),
         sa.Column("attempt", sa.Integer(), nullable=False),
+        sa.Column("dispatch_lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("result", sa.JSON(), nullable=True),
         sa.Column("usage", sa.JSON(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
@@ -41,6 +42,11 @@ def upgrade() -> None:
     op.create_index("ix_research_jobs_user_id", "research_jobs", ["user_id"])
     op.create_index("ix_research_jobs_state", "research_jobs", ["state"])
     op.create_index("ix_research_jobs_state_created", "research_jobs", ["state", "created_at"])
+    op.create_index(
+        "ix_research_jobs_dispatch_lease",
+        "research_jobs",
+        ["state", "dispatch_lease_expires_at"],
+    )
     op.create_table(
         "research_events",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),

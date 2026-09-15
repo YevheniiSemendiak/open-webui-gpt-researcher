@@ -40,6 +40,7 @@ spec:
           env:
             {{- include "research.commonEnv" . | nindent 12 }}
             {{- include "research.apiSecretEnv" . | nindent 12 }}
+            {{- include "research.artifactSecretEnv" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8090

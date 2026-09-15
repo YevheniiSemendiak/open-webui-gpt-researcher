@@ -15,7 +15,7 @@ dependencies = [
   "asyncpg>=0.30,<1",
   "boto3>=1.40,<2",
   "fastapi>=0.116,<1",
-  "gpt-researcher>=0.14,<1",
+  "gpt-researcher==0.16.0",
   "httpx>=0.28,<1",
   "kubernetes-asyncio>=33,<36",
   "pydantic-settings>=2.10,<3",

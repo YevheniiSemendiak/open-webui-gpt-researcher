@@ -1,19 +1,27 @@
 name: open-webui-deep-research
 
 x-research-environment: &research-environment
-  RESEARCH_ENVIRONMENT: development
-  RESEARCH_DATABASE_URL: postgresql+asyncpg://research:research@postgres:5432/research
-  RESEARCH_ARTIFACT_BASE_URL: http://localhost:8090
-  RESEARCH_INTERNAL_BASE_URL: http://api:8090
-  RESEARCH_OPENWEBUI_URL: http://open-webui:8080
-  RESEARCH_ARTIFACT_BACKEND: s3
-  RESEARCH_S3_ENDPOINT_URL: http://minio:9000
-  RESEARCH_S3_BUCKET: research-artifacts
-  RESEARCH_MODE: local
-  RESEARCH_PUBLIC_SEARCH_ENABLED: ${RESEARCH_PUBLIC_SEARCH_ENABLED:-true}
-  RESEARCH_MODEL_ROUTE: ${RESEARCH_MODEL_ROUTE:-openwebui}
-  RESEARCH_MODEL_PROFILES: '${RESEARCH_MODEL_PROFILES:-{"default":"gpt-4.1-mini"}}'
-  RESEARCH_EMBEDDING_MODEL: ${RESEARCH_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+  ENVIRONMENT: development
+  DATABASE_URL: postgresql+asyncpg://research:research@postgres:5432/research
+  ARTIFACT_BASE_URL: http://localhost:8090
+  INTERNAL_BASE_URL: http://api:8090
+  OPENWEBUI_URL: http://open-webui:8080
+  ARTIFACT_BACKEND: s3
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: research-artifacts
+  MODE: local
+  PUBLIC_SEARCH_ENABLED: ${PUBLIC_SEARCH_ENABLED:-true}
+  MODEL_ROUTE: ${MODEL_ROUTE:-openwebui}
+  MODEL_PROFILES: '${MODEL_PROFILES:-{"default":"gpt-4.1-mini"}}'
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+  MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
+  DISPATCH_LEASE_SECONDS: ${DISPATCH_LEASE_SECONDS:-120}
+  DISPATCH_RECONCILE_BATCH_SIZE: ${DISPATCH_RECONCILE_BATCH_SIZE:-100}
+  EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-30}
+  ARTIFACT_RETENTION_DAYS: ${ARTIFACT_RETENTION_DAYS:-90}
+  JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-90}
+  ORPHAN_GRACE_SECONDS: ${ORPHAN_GRACE_SECONDS:-86400}
+  CLEANUP_BATCH_SIZE: ${CLEANUP_BATCH_SIZE:-100}
 
 services:
   postgres:
@@ -74,11 +82,11 @@ services:
     command: ["api"]
     environment:
       <<: *research-environment
-      RESEARCH_SERVICE_TOKEN: ${RESEARCH_SERVICE_TOKEN:-local-service-token-change-before-sharing}
-      RESEARCH_SIGNING_SECRET: ${RESEARCH_SIGNING_SECRET:-local-signing-secret-change-before-sharing-1234}
-      RESEARCH_OPENWEBUI_API_KEY: ${RESEARCH_OPENWEBUI_API_KEY:-}
-      RESEARCH_S3_ACCESS_KEY_ID: minio
-      RESEARCH_S3_SECRET_ACCESS_KEY: minio-secret
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-local-service-token-change-before-sharing}
+      SIGNING_SECRET: ${SIGNING_SECRET:-local-signing-secret-change-before-sharing-1234}
+      OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: minio-secret
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       RETRIEVER: ${RETRIEVER:-tavily}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -119,14 +127,28 @@ services:
     command: ["sync-functions", "--if-configured"]
     environment:
       <<: *research-environment
-      RESEARCH_SERVICE_TOKEN: ${RESEARCH_SERVICE_TOKEN:-local-service-token-change-before-sharing}
-      RESEARCH_OPENWEBUI_API_KEY: ${RESEARCH_OPENWEBUI_API_KEY:-}
-      RESEARCH_FUNCTION_SOURCES_PATH: /app/openwebui_functions
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-local-service-token-change-before-sharing}
+      OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
+      FUNCTION_SOURCES_PATH: /app/openwebui_functions
     depends_on:
       api:
         condition: service_healthy
       open-webui:
         condition: service_healthy
+
+  cleanup:
+    profiles: [maintenance]
+    build: .
+    command: ["cleanup"]
+    environment:
+      <<: *research-environment
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: minio-secret
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
 
 volumes:
   minio-data:

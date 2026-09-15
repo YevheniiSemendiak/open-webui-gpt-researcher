@@ -35,107 +35,133 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default (include "research.fullname" .) .Values.secrets.existingSecret }}
 {{- end }}
 
+{{- define "research.databaseSecretName" -}}
+{{- default (include "research.secretName" .) .Values.database.existingSecret }}
+{{- end }}
+
 {{- define "research.image" -}}
 {{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
 {{- end }}
 
 {{- define "research.commonEnv" -}}
-- name: RESEARCH_ENVIRONMENT
+- name: ENVIRONMENT
   value: {{ .Values.config.environment | quote }}
-- name: RESEARCH_DATABASE_URL
-  value: {{ .Values.config.databaseUrl | quote }}
-- name: RESEARCH_ARTIFACT_BASE_URL
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "research.databaseSecretName" . }}
+      key: {{ .Values.database.secretKey }}
+- name: ARTIFACT_BASE_URL
   value: {{ .Values.config.artifactBaseUrl | quote }}
-- name: RESEARCH_INTERNAL_BASE_URL
+- name: INTERNAL_BASE_URL
   value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.service.port | quote }}
-- name: RESEARCH_OPENWEBUI_URL
+- name: OPENWEBUI_URL
   value: {{ .Values.config.openwebuiUrl | quote }}
-- name: RESEARCH_ARTIFACT_BACKEND
+- name: ARTIFACT_BACKEND
   value: {{ .Values.config.artifactBackend | quote }}
-- name: RESEARCH_ARTIFACT_PATH
+- name: ARTIFACT_PATH
   value: {{ .Values.config.artifactPath | quote }}
-- name: RESEARCH_S3_ENDPOINT_URL
+- name: S3_ENDPOINT_URL
   value: {{ .Values.config.s3EndpointUrl | quote }}
-- name: RESEARCH_S3_REGION
+- name: S3_REGION
   value: {{ .Values.config.s3Region | quote }}
-- name: RESEARCH_S3_BUCKET
+- name: S3_BUCKET
   value: {{ .Values.config.s3Bucket | quote }}
-- name: RESEARCH_MODE
+- name: MODE
   value: {{ .Values.config.mode | quote }}
-- name: RESEARCH_PUBLIC_SEARCH_ENABLED
+- name: PUBLIC_SEARCH_ENABLED
   value: {{ .Values.config.publicSearchEnabled | quote }}
-- name: RESEARCH_MODEL_ROUTE
+- name: MODEL_ROUTE
   value: {{ .Values.config.modelRoute | quote }}
-- name: RESEARCH_MODEL_PROFILES
+- name: MODEL_PROFILES
   value: {{ .Values.config.modelProfiles | toJson | quote }}
-- name: RESEARCH_EMBEDDING_MODEL
+- name: EMBEDDING_MODEL
   value: {{ .Values.config.embeddingModel | quote }}
-- name: RESEARCH_MAX_CONCURRENT_JOBS
+- name: MAX_CONCURRENT_JOBS
   value: {{ .Values.config.maxConcurrentJobs | quote }}
-- name: RESEARCH_CONTROLLER_LEADER_LOCK_ID
+- name: CONTROLLER_LEADER_LOCK_ID
   value: {{ .Values.config.controllerLeaderLockId | quote }}
-- name: RESEARCH_CONTROLLER_LEADER_RETRY_SECONDS
+- name: CONTROLLER_LEADER_RETRY_SECONDS
   value: {{ .Values.config.controllerLeaderRetrySeconds | quote }}
-- name: RESEARCH_HARD_MAX_INPUT_TOKENS
+- name: DISPATCH_LEASE_SECONDS
+  value: {{ .Values.config.dispatchLeaseSeconds | quote }}
+- name: DISPATCH_RECONCILE_BATCH_SIZE
+  value: {{ .Values.config.dispatchReconcileBatchSize | quote }}
+- name: HARD_MAX_INPUT_TOKENS
   value: {{ .Values.config.hardMaxInputTokens | quote }}
-- name: RESEARCH_HARD_MAX_OUTPUT_TOKENS
+- name: HARD_MAX_OUTPUT_TOKENS
   value: {{ .Values.config.hardMaxOutputTokens | quote }}
-- name: RESEARCH_HARD_MAX_SEARCHES
+- name: HARD_MAX_SEARCHES
   value: {{ .Values.config.hardMaxSearches | quote }}
-- name: RESEARCH_HARD_MAX_WALL_TIME_SECONDS
+- name: HARD_MAX_WALL_TIME_SECONDS
   value: {{ .Values.config.hardMaxWallTimeSeconds | quote }}
-- name: RESEARCH_RUNNER_IMAGE
+- name: EVENT_RETENTION_DAYS
+  value: {{ .Values.config.eventRetentionDays | quote }}
+- name: ARTIFACT_RETENTION_DAYS
+  value: {{ .Values.config.artifactRetentionDays | quote }}
+- name: JOB_RETENTION_DAYS
+  value: {{ .Values.config.jobRetentionDays | quote }}
+- name: ORPHAN_GRACE_SECONDS
+  value: {{ .Values.config.orphanGraceSeconds | quote }}
+- name: CLEANUP_BATCH_SIZE
+  value: {{ .Values.config.cleanupBatchSize | quote }}
+- name: RUNNER_IMAGE
   value: {{ include "research.image" . | quote }}
-- name: RESEARCH_RUNNER_NAMESPACE
+- name: RUNNER_NAMESPACE
   valueFrom:
     fieldRef:
       fieldPath: metadata.namespace
-- name: RESEARCH_RUNNER_OWNER_DEPLOYMENT
+- name: RUNNER_OWNER_DEPLOYMENT
   value: {{ printf "%s-controller" (include "research.fullname" .) | quote }}
-- name: RESEARCH_RUNNER_SERVICE_ACCOUNT
+- name: RUNNER_SERVICE_ACCOUNT
   value: {{ include "research.runnerServiceAccount" . | quote }}
-- name: RESEARCH_RUNNER_ACTIVE_DEADLINE_SECONDS
+- name: RUNNER_ACTIVE_DEADLINE_SECONDS
   value: {{ .Values.config.runner.activeDeadlineSeconds | quote }}
-- name: RESEARCH_RUNNER_TTL_SECONDS_AFTER_FINISHED
+- name: RUNNER_TTL_SECONDS_AFTER_FINISHED
   value: {{ .Values.config.runner.ttlSecondsAfterFinished | quote }}
-- name: RESEARCH_RUNNER_CPU_REQUEST
+- name: RUNNER_CPU_REQUEST
   value: {{ .Values.config.runner.resources.requests.cpu | quote }}
-- name: RESEARCH_RUNNER_MEMORY_REQUEST
+- name: RUNNER_MEMORY_REQUEST
   value: {{ .Values.config.runner.resources.requests.memory | quote }}
-- name: RESEARCH_RUNNER_CPU_LIMIT
+- name: RUNNER_CPU_LIMIT
   value: {{ .Values.config.runner.resources.limits.cpu | quote }}
-- name: RESEARCH_RUNNER_MEMORY_LIMIT
+- name: RUNNER_MEMORY_LIMIT
   value: {{ .Values.config.runner.resources.limits.memory | quote }}
 {{- if .Values.config.runner.extraEnvSecret }}
-- name: RESEARCH_RUNNER_EXTRA_ENV_SECRET
+- name: RUNNER_EXTRA_ENV_SECRET
   value: {{ .Values.config.runner.extraEnvSecret | quote }}
 {{- end }}
 {{- end }}
 
 {{- define "research.apiSecretEnv" -}}
-- name: RESEARCH_SERVICE_TOKEN
+- name: SERVICE_TOKEN
   valueFrom:
     secretKeyRef:
       name: {{ include "research.secretName" . }}
       key: service-token
-- name: RESEARCH_SIGNING_SECRET
+- name: SIGNING_SECRET
   valueFrom:
     secretKeyRef:
       name: {{ include "research.secretName" . }}
       key: signing-secret
-- name: RESEARCH_OPENWEBUI_API_KEY
+- name: OPENWEBUI_API_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "research.secretName" . }}
       key: openwebui-api-key
-- name: RESEARCH_S3_ACCESS_KEY_ID
+{{- end }}
+
+{{- define "research.artifactSecretEnv" -}}
+- name: S3_ACCESS_KEY_ID
   valueFrom:
     secretKeyRef:
       name: {{ include "research.secretName" . }}
       key: s3-access-key-id
-- name: RESEARCH_S3_SECRET_ACCESS_KEY
+      optional: true
+- name: S3_SECRET_ACCESS_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "research.secretName" . }}
       key: s3-secret-access-key
+      optional: true
 {{- end }}

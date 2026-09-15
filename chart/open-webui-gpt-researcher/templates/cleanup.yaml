@@ -1,0 +1,48 @@
+{{- if .Values.cleanup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "research.fullname" . }}-cleanup
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cleanup
+spec:
+  schedule: {{ .Values.cleanup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.cleanup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cleanup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.cleanup.backoffLimit }}
+      ttlSecondsAfterFinished: {{ .Values.cleanup.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "research.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: cleanup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "research.runnerServiceAccount" . }}
+          automountServiceAccountToken: false
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          imagePullSecrets:
+            {{- toYaml .Values.imagePullSecrets | nindent 12 }}
+          containers:
+            - name: cleanup
+              image: {{ include "research.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args: ["cleanup"]
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              env:
+                {{- include "research.commonEnv" . | nindent 16 }}
+                {{- include "research.artifactSecretEnv" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.cleanup.resources | nindent 16 }}
+              volumeMounts:
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}

@@ -41,6 +41,7 @@ class ResearchJob(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "idempotency_key", name="uq_job_user_idempotency"),
         Index("ix_research_jobs_state_created", "state", "created_at"),
+        Index("ix_research_jobs_dispatch_lease", "state", "dispatch_lease_expires_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -58,6 +59,9 @@ class ResearchJob(Base):
     state: Mapped[str] = mapped_column(String(32), index=True)
     runner_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
+    dispatch_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     usage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
