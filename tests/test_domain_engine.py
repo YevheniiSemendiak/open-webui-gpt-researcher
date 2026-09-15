@@ -11,9 +11,7 @@ from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.domain import CreateJobRequest, ResearchBudget, RunnerJobSpec
 from open_webui_gpt_researcher.engines import (
     GPTResearcherEngine,
-    MockResearchEngine,
     OpenWebUIRetriever,
-    make_engine,
 )
 
 
@@ -37,33 +35,6 @@ def test_settings_validate_budget_and_profile() -> None:
         settings.resolve_model("missing")
     with pytest.raises(ValueError, match="max_searches"):
         settings.validate_budget(ResearchBudget(max_searches=101))
-
-
-async def test_mock_engine_emits_progress_and_report() -> None:
-    events: list[tuple[str, dict[str, object]]] = []
-
-    async def progress(event_type: str, data: dict[str, object]) -> None:
-        events.append((event_type, data))
-
-    spec = RunnerJobSpec(
-        id=uuid4(),
-        query="Explain the architecture",
-        sources=[],
-        budget=ResearchBudget(),
-        model_profile="default",
-        report_type="deep",
-        report_formats=["markdown"],
-    )
-    result = await MockResearchEngine(step_delay_seconds=0).run(
-        spec,
-        private_context=[{"text": "private evidence"}],
-        progress=progress,
-    )
-    assert result.report_markdown.startswith("# Deep research report")
-    assert len(events) == 4
-    assert isinstance(make_engine("mock"), MockResearchEngine)
-    with pytest.raises(ValueError, match="unsupported"):
-        make_engine("unknown")
 
 
 async def test_gpt_researcher_adapter_merges_private_context(
@@ -117,7 +88,6 @@ async def test_gpt_researcher_adapter_merges_private_context(
     assert result.usage == {"upstream_costs": 1.5}
     assert events[0][1] == {"stage": "searching"}
     assert OpenWebUIRetriever in instances[0].retrievers  # type: ignore[union-attr]
-    assert isinstance(make_engine("gpt-researcher"), GPTResearcherEngine)
 
 
 async def test_gpt_researcher_can_use_only_openwebui_sources(

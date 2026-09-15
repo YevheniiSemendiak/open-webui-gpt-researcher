@@ -9,9 +9,7 @@ x-research-environment: &research-environment
   RESEARCH_ARTIFACT_BACKEND: s3
   RESEARCH_S3_ENDPOINT_URL: http://minio:9000
   RESEARCH_S3_BUCKET: research-artifacts
-  RESEARCH_EXECUTOR: local
-  RESEARCH_CONTROLLER_LEADER_ELECTION: database
-  RESEARCH_ENGINE: ${RESEARCH_ENGINE:-mock}
+  RESEARCH_MODE: local
   RESEARCH_PUBLIC_SEARCH_ENABLED: ${RESEARCH_PUBLIC_SEARCH_ENABLED:-true}
   RESEARCH_MODEL_ROUTE: ${RESEARCH_MODEL_ROUTE:-openwebui}
   RESEARCH_MODEL_PROFILES: '${RESEARCH_MODEL_PROFILES:-{"default":"gpt-4.1-mini"}}'
@@ -81,6 +79,9 @@ services:
       RESEARCH_OPENWEBUI_API_KEY: ${RESEARCH_OPENWEBUI_API_KEY:-}
       RESEARCH_S3_ACCESS_KEY_ID: minio
       RESEARCH_S3_SECRET_ACCESS_KEY: minio-secret
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      RETRIEVER: ${RETRIEVER:-tavily}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -94,18 +95,6 @@ services:
     ports:
       - "8090:8090"
 
-  controller:
-    build: .
-    command: ["controller"]
-    environment:
-      <<: *research-environment
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      RETRIEVER: ${RETRIEVER:-tavily}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-    depends_on:
-      api:
-        condition: service_healthy
-
   open-webui:
     image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.3}
     environment:
@@ -115,10 +104,29 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     volumes:
       - openwebui-data:/app/backend/data
     ports:
       - "3000:8080"
+
+  function-sync:
+    build: .
+    command: ["sync-functions", "--if-configured"]
+    environment:
+      <<: *research-environment
+      RESEARCH_SERVICE_TOKEN: ${RESEARCH_SERVICE_TOKEN:-local-service-token-change-before-sharing}
+      RESEARCH_OPENWEBUI_API_KEY: ${RESEARCH_OPENWEBUI_API_KEY:-}
+      RESEARCH_FUNCTION_SOURCES_PATH: /app/openwebui_functions
+    depends_on:
+      api:
+        condition: service_healthy
+      open-webui:
+        condition: service_healthy
 
 volumes:
   minio-data:

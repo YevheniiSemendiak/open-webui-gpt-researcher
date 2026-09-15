@@ -13,7 +13,7 @@ log = structlog.get_logger()
 
 
 class Controller:
-    """Claims durable queue entries and dispatches isolated runners."""
+    """Claims durable queue entries and dispatches runners."""
 
     def __init__(
         self,
@@ -31,13 +31,8 @@ class Controller:
     async def run_forever(self) -> None:
         log.info(
             "controller.started",
-            executor=self.settings.executor,
-            leader_election=self.settings.controller_leader_election,
+            mode=self.settings.mode,
         )
-        if self.settings.controller_leader_election == "none":
-            await self._dispatch_forever()
-            return
-
         while True:
             try:
                 async with self.database.advisory_lock(

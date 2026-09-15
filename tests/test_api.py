@@ -1,10 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 from urllib.parse import urlsplit
 
 import httpx
+from asgi_lifespan import LifespanManager
+
+from open_webui_gpt_researcher.api import create_app
+from open_webui_gpt_researcher.config import Settings
+from open_webui_gpt_researcher.controller import Controller
+
+
+async def test_local_mode_embeds_dispatcher(settings: Settings, monkeypatch: Any) -> None:
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def run_forever(self: Controller) -> None:
+        del self
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            stopped.set()
+            raise
+
+    monkeypatch.setattr(Controller, "run_forever", run_forever)
+    app = create_app(settings.model_copy(update={"mode": "local"}))
+    async with LifespanManager(app):
+        await asyncio.wait_for(started.wait(), timeout=1)
+    assert stopped.is_set()
 
 
 async def test_job_lifecycle_and_artifact_download(

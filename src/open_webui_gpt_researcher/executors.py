@@ -99,7 +99,6 @@ class KubernetesJobExecutor:
             client.V1EnvVar(name="RESEARCH_JOB_ID", value=str(job_id)),
             client.V1EnvVar(name="RESEARCH_RUNNER_TOKEN", value=runner_token),
             client.V1EnvVar(name="RESEARCH_INTERNAL_BASE_URL", value=settings.internal_base_url),
-            client.V1EnvVar(name="RESEARCH_ENGINE", value=settings.engine),
             client.V1EnvVar(
                 name="RESEARCH_PUBLIC_SEARCH_ENABLED",
                 value=str(settings.public_search_enabled).lower(),
@@ -174,6 +173,6 @@ class KubernetesJobExecutor:
 
 
 def make_executor(settings: Settings) -> Executor:
-    if settings.executor == "local":
+    if settings.mode == "local":
         return LocalProcessExecutor(settings)
     return KubernetesJobExecutor(settings)

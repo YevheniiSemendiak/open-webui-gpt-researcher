@@ -22,6 +22,7 @@ def settings(tmp_path: Path) -> Settings:
         service_token="test-service-token",
         signing_secret="test-signing-secret-with-more-than-32-bytes",
         auto_create_schema=True,
+        mode="k8s",
         model_profiles={"default": "test-model"},
     )
 

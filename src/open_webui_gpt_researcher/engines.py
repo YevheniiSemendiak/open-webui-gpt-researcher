@@ -64,47 +64,6 @@ class ResearchEngine(Protocol):
 
 
 @dataclass
-class MockResearchEngine:
-    """Deterministic engine used by tests and the zero-credential local demo."""
-
-    step_delay_seconds: float = 0.05
-
-    async def run(
-        self,
-        spec: RunnerJobSpec,
-        *,
-        private_context: list[dict[str, object]],
-        progress: ProgressCallback,
-    ) -> RunnerCompletion:
-        for stage, message in (
-            ("planning", "Building research plan"),
-            ("searching", "Searching and reviewing sources"),
-            ("synthesizing", "Synthesizing findings"),
-            ("writing", "Writing report"),
-        ):
-            await progress("research.progress", {"stage": stage, "message": message})
-            await asyncio.sleep(self.step_delay_seconds)
-        context_note = (
-            f"The run included {len(private_context)} private Open WebUI passage(s)."
-            if private_context
-            else "No private Open WebUI passages were selected."
-        )
-        report = (
-            f"# Deep research report\n\n## Question\n\n{spec.query}\n\n"
-            f"## Executive summary\n\nThis is a deterministic local-development report. "
-            f"{context_note}\n\n## Findings\n\n"
-            "Configure `RESEARCH_ENGINE=gpt-researcher` and provider/search credentials "
-            "to run live research.\n"
-        )
-        return RunnerCompletion(
-            report_markdown=report,
-            research_notes_markdown="# Research notes\n\nMock engine run.\n",
-            sources=list(private_context),
-            usage={"input_tokens": 0, "output_tokens": 0, "searches": 0},
-        )
-
-
-@dataclass
 class GPTResearcherEngine:
     """Thin adapter around the upstream GPT Researcher Python package."""
 
@@ -173,11 +132,3 @@ class GPTResearcherEngine:
             sources=sources,
             usage={"upstream_costs": costs},
         )
-
-
-def make_engine(name: str, *, public_search_enabled: bool = True) -> ResearchEngine:
-    if name == "mock":
-        return MockResearchEngine()
-    if name == "gpt-researcher":
-        return GPTResearcherEngine(public_search_enabled=public_search_enabled)
-    raise ValueError(f"unsupported engine: {name}")

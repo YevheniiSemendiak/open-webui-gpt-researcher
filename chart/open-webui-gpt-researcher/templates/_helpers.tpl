@@ -60,10 +60,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.config.s3Region | quote }}
 - name: RESEARCH_S3_BUCKET
   value: {{ .Values.config.s3Bucket | quote }}
-- name: RESEARCH_EXECUTOR
-  value: {{ .Values.config.executor | quote }}
-- name: RESEARCH_ENGINE
-  value: {{ .Values.config.engine | quote }}
+- name: RESEARCH_MODE
+  value: {{ .Values.config.mode | quote }}
 - name: RESEARCH_PUBLIC_SEARCH_ENABLED
   value: {{ .Values.config.publicSearchEnabled | quote }}
 - name: RESEARCH_MODEL_ROUTE
@@ -74,8 +72,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.config.embeddingModel | quote }}
 - name: RESEARCH_MAX_CONCURRENT_JOBS
   value: {{ .Values.config.maxConcurrentJobs | quote }}
-- name: RESEARCH_CONTROLLER_LEADER_ELECTION
-  value: {{ .Values.config.controllerLeaderElection | quote }}
 - name: RESEARCH_CONTROLLER_LEADER_LOCK_ID
   value: {{ .Values.config.controllerLeaderLockId | quote }}
 - name: RESEARCH_CONTROLLER_LEADER_RETRY_SECONDS

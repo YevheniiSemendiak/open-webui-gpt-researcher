@@ -40,15 +40,13 @@ config:
   s3EndpointUrl: https://s3.example.com
   s3Region: us-east-1
   s3Bucket: research-artifacts
-  executor: kubernetes
-  engine: gpt-researcher
+  mode: k8s
   publicSearchEnabled: true
   modelRoute: openwebui
   modelProfiles:
     default: gpt-4.1-mini
   embeddingModel: sentence-transformers/all-MiniLM-L6-v2
   maxConcurrentJobs: 5
-  controllerLeaderElection: database
   # Quoted to preserve all 64 bits through YAML/Helm parsing.
   controllerLeaderLockId: "7305809465149768307"
   controllerLeaderRetrySeconds: 5
@@ -95,6 +93,18 @@ controller:
     limits:
       cpu: 500m
       memory: 512Mi
+
+functionSync:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
 
 podSecurityContext:
   runAsNonRoot: true

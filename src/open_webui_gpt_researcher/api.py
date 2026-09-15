@@ -24,6 +24,7 @@ from .auth import (
     verify_download_token,
 )
 from .config import Settings, get_settings
+from .controller import Controller
 from .db import Database, ResearchJob
 from .domain import (
     CreateJobRequest,
@@ -32,6 +33,7 @@ from .domain import (
     RunnerEvent,
     SaveToKnowledgeRequest,
 )
+from .executors import make_executor
 from .openwebui import OpenWebUIClient, OpenWebUIError
 from .repository import (
     IdempotencyConflictError,
@@ -90,9 +92,26 @@ def create_app(
         del app
         if settings.auto_create_schema:
             await database.create_all()
-        yield
-        await openwebui.close()
-        await database.close()
+        dispatcher_task: asyncio.Task[None] | None = None
+        if settings.mode == "local":
+            dispatcher = Controller(
+                settings=settings,
+                database=database,
+                repository=repository,
+                executor=make_executor(settings),
+            )
+            dispatcher_task = asyncio.create_task(
+                dispatcher.run_forever(), name="local-research-dispatcher"
+            )
+        try:
+            yield
+        finally:
+            if dispatcher_task is not None:
+                dispatcher_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await dispatcher_task
+            await openwebui.close()
+            await database.close()
 
     app = FastAPI(
         title="Open WebUI GPT Researcher",

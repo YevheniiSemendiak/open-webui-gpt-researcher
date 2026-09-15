@@ -47,7 +47,7 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
             )()
 
     settings = Settings(
-        executor="kubernetes",
+        mode="k8s",
         runner_namespace="research",
         runner_image="registry/research:v1",
         runner_owner_deployment="research-controller",

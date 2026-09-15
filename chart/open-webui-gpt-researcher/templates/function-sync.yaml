@@ -1,0 +1,57 @@
+{{- if .Values.functionSync.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "research.fullname" . }}-function-sync
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: function-sync
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "10"
+spec:
+  backoffLimit: {{ .Values.functionSync.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.functionSync.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "research.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: function-sync
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "research.runnerServiceAccount" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: sync-functions
+          image: {{ include "research.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["sync-functions"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: RESEARCH_OPENWEBUI_URL
+              value: {{ .Values.config.openwebuiUrl | quote }}
+            - name: RESEARCH_OPENWEBUI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "research.secretName" . }}
+                  key: openwebui-api-key
+            - name: RESEARCH_INTERNAL_BASE_URL
+              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.service.port | quote }}
+            - name: RESEARCH_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "research.secretName" . }}
+                  key: service-token
+            - name: RESEARCH_PUBLIC_SEARCH_ENABLED
+              value: {{ .Values.config.publicSearchEnabled | quote }}
+            - name: RESEARCH_FUNCTION_SOURCES_PATH
+              value: /app/openwebui_functions
+          resources:
+            {{- toYaml .Values.functionSync.resources | nindent 12 }}
+{{- end }}

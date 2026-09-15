@@ -111,19 +111,6 @@ async def test_controller_returns_when_leadership_is_lost() -> None:
     )
 
 
-async def test_controller_can_disable_election_for_tests(monkeypatch: Any) -> None:
-    controller = Controller(
-        settings=Settings(controller_leader_election="none"),
-        database=FakeLeaderDatabase(FakeLeaderLease(acquired=False)),  # type: ignore[arg-type]
-        repository=JobRepository(),
-        executor=RecordingExecutor(),
-    )
-    dispatch = AsyncMock()
-    monkeypatch.setattr(controller, "_dispatch_forever", dispatch)
-    await controller.run_forever()
-    dispatch.assert_awaited_once_with()
-
-
 class FakeRunnerClient:
     def __init__(self, state: JobState = JobState.RUNNING) -> None:
         self.token = "runner-token"

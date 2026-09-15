@@ -16,6 +16,7 @@ WORKDIR /app
 COPY --from=builder --chown=research:research /app/.venv /app/.venv
 COPY --chown=research:research alembic.ini ./
 COPY --chown=research:research migrations ./migrations
+COPY --chown=research:research openwebui_functions ./openwebui_functions
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 USER 10001:10001
 EXPOSE 8090

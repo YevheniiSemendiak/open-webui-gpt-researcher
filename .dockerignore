@@ -6,6 +6,5 @@
 .venv
 chart
 docs
-openwebui_functions
 tests
 **/__pycache__

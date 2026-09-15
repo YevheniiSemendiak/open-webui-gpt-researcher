@@ -13,8 +13,9 @@ from .api import create_app
 from .config import get_settings
 from .controller import Controller
 from .db import Database
-from .engines import make_engine
+from .engines import GPTResearcherEngine
 from .executors import make_executor
+from .function_sync import FunctionSync
 from .logging import configure_logging
 from .repository import JobRepository
 from .runner import Runner, RunnerClient
@@ -29,11 +30,15 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("controller")
     subparsers.add_parser("runner")
     subparsers.add_parser("migrate")
+    sync = subparsers.add_parser("sync-functions")
+    sync.add_argument("--if-configured", action="store_true")
     return parser.parse_args()
 
 
 async def run_controller() -> None:
     settings = get_settings()
+    if settings.mode != "k8s":
+        raise SystemExit("the standalone controller is only used in k8s mode")
     database = Database(settings.database_url)
     try:
         controller = Controller(
@@ -62,7 +67,7 @@ async def run_runner() -> None:
     await Runner(
         settings=settings,
         client=client,
-        engine=make_engine(settings.engine, public_search_enabled=settings.public_search_enabled),
+        engine=GPTResearcherEngine(public_search_enabled=settings.public_search_enabled),
     ).run()
 
 
@@ -71,6 +76,19 @@ def run_migrations() -> None:
     configuration = Config("alembic.ini")
     configuration.set_main_option("sqlalchemy.url", settings.database_url)
     command.upgrade(configuration, "head")
+
+
+async def sync_functions(*, if_configured: bool = False) -> None:
+    settings = get_settings()
+    if not settings.openwebui_api_key.get_secret_value():
+        if if_configured:
+            return
+        raise SystemExit("RESEARCH_OPENWEBUI_API_KEY is required to sync Functions")
+    sync = FunctionSync(settings)
+    try:
+        await sync.run()
+    finally:
+        await sync.close()
 
 
 def main() -> None:
@@ -83,8 +101,10 @@ def main() -> None:
         asyncio.run(run_controller())
     elif args.command == "runner":
         asyncio.run(run_runner())
-    else:
+    elif args.command == "migrate":
         run_migrations()
+    else:
+        asyncio.run(sync_functions(if_configured=args.if_configured))
 
 
 if __name__ == "__main__":

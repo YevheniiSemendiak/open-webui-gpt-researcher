@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     openwebui_url: str = "http://open-webui:8080"
     openwebui_api_key: SecretStr = SecretStr("")
+    function_sources_path: str = "openwebui_functions"
 
     artifact_backend: Literal["filesystem", "s3"] = "filesystem"
     artifact_path: str = "/data/artifacts"
@@ -39,7 +40,7 @@ class Settings(BaseSettings):
     s3_access_key_id: SecretStr = SecretStr("")
     s3_secret_access_key: SecretStr = SecretStr("")
 
-    executor: Literal["local", "kubernetes"] = "local"
+    mode: Literal["local", "k8s"] = "local"
     runner_image: str = "ghcr.io/example/open-webui-gpt-researcher:latest"
     runner_namespace: str = "default"
     runner_owner_deployment: str | None = None
@@ -53,11 +54,9 @@ class Settings(BaseSettings):
     runner_extra_env_secret: str | None = None
 
     controller_poll_seconds: float = Field(default=2.0, ge=0.1)
-    controller_leader_election: Literal["database", "none"] = "database"
     controller_leader_lock_id: int = 7_305_809_465_149_768_307
     controller_leader_retry_seconds: float = Field(default=5.0, ge=0.5)
     max_concurrent_jobs: int = Field(default=5, ge=1, le=100)
-    engine: Literal["mock", "gpt-researcher"] = "mock"
     public_search_enabled: bool = True
     model_route: Literal["openwebui", "direct"] = "openwebui"
     model_profiles: dict[str, str] = {"default": "gpt-4.1-mini"}
