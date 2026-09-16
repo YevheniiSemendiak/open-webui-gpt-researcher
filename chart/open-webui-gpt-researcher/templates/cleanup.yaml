@@ -35,8 +35,15 @@ spec:
               args: ["cleanup"]
               securityContext:
                 {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              envFrom:
+                - configMapRef:
+                    name: {{ include "research.fullname" . }}
               env:
-                {{- include "research.commonEnv" . | nindent 16 }}
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "research.databaseSecretName" . }}
+                      key: {{ .Values.database.secretKey }}
                 {{- include "research.artifactSecretEnv" . | nindent 16 }}
               resources:
                 {{- toYaml .Values.cleanup.resources | nindent 16 }}

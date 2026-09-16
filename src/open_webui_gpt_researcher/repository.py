@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .db import ResearchArtifact, ResearchEvent, ResearchJob
 from .domain import (
     TERMINAL_STATES,
+    ContextDocument,
     CreateJobRequest,
     JobEventView,
     JobState,
@@ -83,6 +84,17 @@ class JobRepository:
                 raise IdempotencyConflictError
             return existing, False
 
+        parent = await session.scalar(
+            select(ResearchJob)
+            .where(
+                ResearchJob.user_id == user_id,
+                ResearchJob.chat_id == request.chat_id,
+                ResearchJob.state == JobState.SUCCEEDED.value,
+            )
+            .order_by(ResearchJob.created_at.desc())
+            .limit(1)
+        )
+
         job = ResearchJob(
             user_id=user_id,
             idempotency_key=idempotency_key,
@@ -91,8 +103,16 @@ class JobRepository:
             chat_id=request.chat_id,
             message_id=request.message_id,
             sources=[source.model_dump(mode="json") for source in request.sources],
+            context_documents=[
+                document.model_dump(mode="json") for document in request.context_documents
+            ],
+            parent_job_id=parent.id if parent is not None else None,
+            iteration=(parent.iteration + 1) if parent is not None else 1,
             budget=request.budget.model_dump(mode="json"),
-            model_profile=request.model_profile,
+            models=request.models.model_dump(mode="json"),
+            model_capabilities=[
+                capability.model_dump(mode="json") for capability in request.model_capabilities
+            ],
             report_type=request.report_type,
             report_formats=request.report_formats,
             state=JobState.PENDING.value,
@@ -122,6 +142,18 @@ class JobRepository:
             raise JobNotFoundError
         return job
 
+    async def get_for_runner_locked(
+        self, session: AsyncSession, *, job_id: UUID, runner_token: str
+    ) -> ResearchJob:
+        job = await session.scalar(
+            select(ResearchJob).where(ResearchJob.id == str(job_id)).with_for_update()
+        )
+        if job is None or job.runner_token_hash is None:
+            raise JobNotFoundError
+        if not secrets.compare_digest(job.runner_token_hash, hash_token(runner_token)):
+            raise JobNotFoundError
+        return job
+
     async def get_by_idempotency(
         self, session: AsyncSession, *, user_id: str, idempotency_key: str
     ) -> ResearchJob:
@@ -130,6 +162,28 @@ class JobRepository:
                 ResearchJob.user_id == user_id,
                 ResearchJob.idempotency_key == idempotency_key,
             )
+        )
+        if job is None:
+            raise JobNotFoundError
+        return job
+
+    async def get_by_chat_message(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: str,
+        chat_id: str,
+        message_id: str,
+    ) -> ResearchJob:
+        job = await session.scalar(
+            select(ResearchJob)
+            .where(
+                ResearchJob.user_id == user_id,
+                ResearchJob.chat_id == chat_id,
+                ResearchJob.message_id == message_id,
+            )
+            .order_by(ResearchJob.created_at.desc())
+            .limit(1)
         )
         if job is None:
             raise JobNotFoundError
@@ -345,6 +399,8 @@ class JobRepository:
         error: str,
     ) -> ResearchJob:
         job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
+        if job.state == JobState.FAILED.value:
+            return job
         if JobState(job.state) not in {JobState.DISPATCHED, JobState.RUNNING}:
             raise InvalidStateError(f"cannot fail job in state {job.state}")
         job.state = JobState.FAILED.value
@@ -409,14 +465,11 @@ class JobRepository:
         output_tokens: int = 0,
         searches: int = 0,
     ) -> dict[str, int]:
-        job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
-        await session.execute(
-            select(ResearchJob.id).where(ResearchJob.id == job.id).with_for_update()
-        )
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         usage = dict(job.usage or {})
-        usage["input_tokens"] = int(usage.get("input_tokens", 0)) + input_tokens
-        usage["output_tokens"] = int(usage.get("output_tokens", 0)) + output_tokens
-        usage["searches"] = int(usage.get("searches", 0)) + searches
+        usage["input_tokens"] = max(0, int(usage.get("input_tokens", 0)) + input_tokens)
+        usage["output_tokens"] = max(0, int(usage.get("output_tokens", 0)) + output_tokens)
+        usage["searches"] = max(0, int(usage.get("searches", 0)) + searches)
         job.usage = usage
         await session.flush()
         return {key: int(value) for key, value in usage.items()}
@@ -432,6 +485,19 @@ class JobRepository:
         if artifact is None:
             raise JobNotFoundError
         return artifact
+
+    async def list_artifacts(
+        self, session: AsyncSession, *, job_id: UUID
+    ) -> list[ResearchArtifact]:
+        return list(
+            (
+                await session.scalars(
+                    select(ResearchArtifact)
+                    .where(ResearchArtifact.job_id == str(job_id))
+                    .order_by(ResearchArtifact.id)
+                )
+            ).all()
+        )
 
     async def list_expired_artifacts(
         self, session: AsyncSession, *, cutoff: datetime, limit: int
@@ -526,8 +592,12 @@ def to_job_view(job: ResearchJob) -> JobView:
         chat_id=job.chat_id,
         message_id=job.message_id,
         sources=[SourceRef.model_validate(source) for source in job.sources],
+        parent_job_id=UUID(job.parent_job_id) if job.parent_job_id else None,
+        iteration=job.iteration,
+        context_document_count=len(job.context_documents or []),
         budget=job.budget,
-        model_profile=job.model_profile,
+        models=job.models,
+        model_capabilities=job.model_capabilities,
         created_at=job.created_at,
         updated_at=job.updated_at,
         started_at=job.started_at,
@@ -552,8 +622,14 @@ def to_runner_spec(job: ResearchJob) -> RunnerJobSpec:
         id=UUID(job.id),
         query=job.query,
         sources=[SourceRef.model_validate(source) for source in job.sources],
+        context_documents=[
+            ContextDocument.model_validate(document) for document in job.context_documents
+        ],
+        parent_job_id=UUID(job.parent_job_id) if job.parent_job_id else None,
+        iteration=job.iteration,
         budget=job.budget,
-        model_profile=job.model_profile,
+        models=job.models,
+        model_capabilities=job.model_capabilities,
         report_type=job.report_type,
         report_formats=job.report_formats,
     )

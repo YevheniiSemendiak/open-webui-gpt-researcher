@@ -22,12 +22,6 @@ async def test_openwebui_gateway_operations() -> None:
             return httpx.Response(200, json={"documents": [["collection text"]]})
         if request.url.path.endswith("/query/doc"):
             return httpx.Response(200, json={"documents": [["file text"]]})
-        if request.url.path == "/api/v1/files/":
-            return httpx.Response(200, json={"id": "file-id"})
-        if request.url.path == "/api/v1/knowledge/create":
-            return httpx.Response(200, json={"id": "knowledge-id"})
-        if request.url.path == "/api/v1/knowledge/knowledge-id":
-            return httpx.Response(200, json={"user_id": "user-id", "access_grants": []})
         return httpx.Response(200, json={"ok": True})
 
     client = make_client(httpx.MockTransport(handler))
@@ -39,10 +33,6 @@ async def test_openwebui_gateway_operations() -> None:
         ],
     )
     assert [item.text for item in passages] == ["collection text", "file text"]
-    assert await client.upload_markdown(name="r.md", content=b"report") == "file-id"
-    assert await client.create_knowledge(name="Research", owner_user_id="user-id") == "knowledge-id"
-    await client.assert_knowledge_write_access(knowledge_id="knowledge-id", user_id="user-id")
-    await client.add_file_to_knowledge(knowledge_id="knowledge-id", file_id="file-id")
     await client.emit_message_event(
         chat_id="chat", message_id="message", event_type="status", data={}
     )
@@ -57,10 +47,26 @@ async def test_gateway_rejects_model_and_write_access() -> None:
         return httpx.Response(500, text="provider failed")
 
     client = make_client(httpx.MockTransport(handler))
-    with pytest.raises(OpenWebUIError, match="outside its profile"):
-        await client.proxy_chat_completions(payload={"model": "wrong"}, allowed_model="allowed")
-    with pytest.raises(OpenWebUIError, match="write access"):
-        await client.assert_knowledge_write_access(knowledge_id="knowledge-id", user_id="other")
+    with pytest.raises(OpenWebUIError, match="outside its frozen selection"):
+        await client.proxy_chat_completions(
+            payload={"model": "wrong"},
+            allowed_models={"fast", "smart"},
+            default_model="smart",
+        )
     with pytest.raises(OpenWebUIError, match="returned 500"):
         await client.proxy_embeddings(payload={"input": "text"}, model="embed")
+    await client.close()
+
+
+async def test_list_models_can_use_user_or_integration_authorization() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"data": [{"id": "model-1"}]})
+
+    client = make_client(httpx.MockTransport(handler))
+    assert await client.list_models(authorization="Bearer user-token") == [{"id": "model-1"}]
+    assert await client.list_models() == [{"id": "model-1"}]
+    assert requests[0].headers["authorization"] == "Bearer user-token"
     await client.close()

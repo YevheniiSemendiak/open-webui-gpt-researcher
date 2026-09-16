@@ -13,6 +13,13 @@ from open_webui_gpt_researcher.db import Database, ResearchArtifact, ResearchEve
 from open_webui_gpt_researcher.domain import CreateJobRequest, JobState
 from open_webui_gpt_researcher.repository import JobRepository
 
+MODEL_REQUEST = {
+    "models": {"fast": "test-model", "smart": "test-model", "strategic": "test-model"},
+    "model_capabilities": [
+        {"id": "test-model", "context_length": 128_000, "max_output_tokens": 32_000}
+    ],
+}
+
 
 async def test_cleanup_removes_expired_records_artifacts_and_orphans(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cleanup.sqlite'}")
@@ -26,7 +33,12 @@ async def test_cleanup_removes_expired_records_artifacts_and_orphans(tmp_path: P
             session,
             user_id="user",
             idempotency_key="cleanup-job",
-            request=CreateJobRequest(query="Old research", chat_id="chat", message_id="message"),
+            request=CreateJobRequest(
+                query="Old research",
+                chat_id="chat",
+                message_id="message",
+                **MODEL_REQUEST,
+            ),
         )
         job.state = JobState.SUCCEEDED.value
         job.finished_at = old

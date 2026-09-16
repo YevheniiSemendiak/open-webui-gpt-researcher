@@ -35,6 +35,32 @@ class SourceRef(BaseModel):
     name: str | None = Field(default=None, max_length=512)
 
 
+class ContextDocument(BaseModel):
+    """User-authorized Open WebUI conversation context frozen for one run."""
+
+    kind: Literal["conversation", "linked_chat"]
+    id: str = Field(min_length=1, max_length=255)
+    title: str | None = Field(default=None, max_length=1_024)
+    text: str = Field(min_length=1, max_length=300_000)
+    chat_id: str = Field(min_length=1, max_length=255)
+
+
+class ModelRoles(BaseModel):
+    """Open WebUI model IDs selected for one research run."""
+
+    fast: str = Field(min_length=1, max_length=512)
+    smart: str = Field(min_length=1, max_length=512)
+    strategic: str = Field(min_length=1, max_length=512)
+
+
+class ModelCapability(BaseModel):
+    """Frozen limits published by Open WebUI for an accessible model."""
+
+    id: str = Field(min_length=1, max_length=512)
+    context_length: int = Field(ge=4_096)
+    max_output_tokens: int = Field(ge=1)
+
+
 class ResearchBudget(BaseModel):
     """User-visible limits validated against administrator caps."""
 
@@ -55,8 +81,10 @@ class CreateJobRequest(BaseModel):
     chat_id: str = Field(min_length=1, max_length=255)
     message_id: str = Field(min_length=1, max_length=255)
     sources: list[SourceRef] = Field(default_factory=list, max_length=200)
+    context_documents: list[ContextDocument] = Field(default_factory=list, max_length=50)
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
-    model_profile: str = Field(default="default", min_length=1, max_length=100)
+    models: ModelRoles
+    model_capabilities: list[ModelCapability] = Field(min_length=1, max_length=3)
     report_type: Literal["research_report", "deep", "detailed_report"] = "deep"
     report_formats: list[Literal["markdown", "json"]] = Field(
         default_factory=default_report_formats,
@@ -68,6 +96,21 @@ class CreateJobRequest(BaseModel):
         identities = [(source.kind, source.id) for source in self.sources]
         if len(identities) != len(set(identities)):
             msg = "sources must be unique"
+            raise ValueError(msg)
+        context_identities = [(document.kind, document.id) for document in self.context_documents]
+        if len(context_identities) != len(set(context_identities)):
+            msg = "context documents must be unique"
+            raise ValueError(msg)
+        if sum(len(document.text) for document in self.context_documents) > 500_000:
+            msg = "context documents exceed the 500000 character request limit"
+            raise ValueError(msg)
+        capability_ids = [capability.id for capability in self.model_capabilities]
+        if len(capability_ids) != len(set(capability_ids)):
+            msg = "model capabilities must be unique"
+            raise ValueError(msg)
+        selected = {self.models.fast, self.models.smart, self.models.strategic}
+        if selected != set(capability_ids):
+            msg = "every selected model must have exactly one capability snapshot"
             raise ValueError(msg)
         return self
 
@@ -81,8 +124,12 @@ class JobView(BaseModel):
     chat_id: str
     message_id: str
     sources: list[SourceRef]
+    parent_job_id: UUID | None = None
+    iteration: int = 1
+    context_document_count: int = 0
     budget: ResearchBudget
-    model_profile: str
+    models: ModelRoles
+    model_capabilities: list[ModelCapability]
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None
@@ -107,8 +154,12 @@ class RunnerJobSpec(BaseModel):
     id: UUID
     query: str
     sources: list[SourceRef]
+    context_documents: list[ContextDocument] = Field(default_factory=list)
+    parent_job_id: UUID | None = None
+    iteration: int = 1
     budget: ResearchBudget
-    model_profile: str
+    models: ModelRoles
+    model_capabilities: list[ModelCapability]
     report_type: str
     report_formats: list[str]
 
@@ -127,20 +178,6 @@ class RunnerCompletion(BaseModel):
     research_notes_markdown: str = ""
     sources: list[dict[str, object]] = Field(default_factory=list)
     usage: dict[str, object] = Field(default_factory=dict)
-
-
-class SaveToKnowledgeRequest(BaseModel):
-    """Explicit post-run promotion into Open WebUI Knowledge."""
-
-    name: str | None = Field(default=None, min_length=1, max_length=200)
-    knowledge_id: str | None = Field(default=None, min_length=1, max_length=255)
-
-    @model_validator(mode="after")
-    def choose_create_or_append(self) -> SaveToKnowledgeRequest:
-        if bool(self.name) == bool(self.knowledge_id):
-            msg = "provide exactly one of name or knowledge_id"
-            raise ValueError(msg)
-        return self
 
 
 TokenCount = Annotated[int, Field(ge=0)]

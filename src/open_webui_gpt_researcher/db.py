@@ -52,8 +52,14 @@ class ResearchJob(Base):
     chat_id: Mapped[str] = mapped_column(String(255))
     message_id: Mapped[str] = mapped_column(String(255))
     sources: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    context_documents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    parent_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("research_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    iteration: Mapped[int] = mapped_column(Integer, default=1)
     budget: Mapped[dict[str, Any]] = mapped_column(JSON)
-    model_profile: Mapped[str] = mapped_column(String(100))
+    models: Mapped[dict[str, Any]] = mapped_column(JSON)
+    model_capabilities: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
     report_type: Mapped[str] = mapped_column(String(100))
     report_formats: Mapped[list[str]] = mapped_column(JSON, default=list)
     state: Mapped[str] = mapped_column(String(32), index=True)

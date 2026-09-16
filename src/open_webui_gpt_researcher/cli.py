@@ -69,7 +69,11 @@ async def run_runner() -> None:
     await Runner(
         settings=settings,
         client=client,
-        engine=GPTResearcherEngine(public_search_enabled=settings.public_search_enabled),
+        engine=GPTResearcherEngine(
+            public_search_enabled=settings.public_search_enabled,
+            retriever=settings.retriever,
+            scraper=settings.scraper,
+        ),
     ).run()
 
 

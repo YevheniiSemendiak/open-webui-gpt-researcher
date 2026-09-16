@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 from contextlib import suppress
 from uuid import UUID
@@ -14,6 +13,31 @@ from .domain import JobState, RunnerCompletion, RunnerJobSpec
 from .engines import ResearchEngine
 
 log = structlog.get_logger()
+
+
+def plan_deep_research(max_searches: int) -> tuple[int, int, int]:
+    """Choose an upstream shape whose worst-case search fan-out fits the budget."""
+    breadth = 2 if max_searches >= 7 else 1
+    if breadth == 2 and max_searches >= 43:
+        depth = 3
+    elif breadth == 2 and max_searches >= 19:
+        depth = 2
+    else:
+        depth = 1
+
+    branches = breadth
+    level_width = breadth
+    level_breadth = breadth
+    for _ in range(1, depth):
+        level_breadth = max(2, level_breadth // 2)
+        level_width *= level_breadth
+        branches += level_width
+
+    # Each nested researcher performs one planning search, MAX_ITERATIONS
+    # generated searches, and one search for its original query. The root
+    # deep-research planner performs one additional search.
+    max_iterations = max(1, min(5, (max_searches - 1) // branches - 2))
+    return breadth, depth, max_iterations
 
 
 class RunnerClient:
@@ -86,25 +110,38 @@ class Runner:
         spec = await self.client.get_spec()
         self._configure_model_gateway(spec)
         await self.client.started()
-        await self.client.event("research.progress", {"stage": "retrieval"})
-        private_context = (
-            await self.client.retrieve_private_context(spec.query) if spec.sources else []
-        )
+        await self._report_progress("research.progress", {"stage": "retrieval"})
+        private_context: list[dict[str, object]] = [
+            {
+                "text": document.text,
+                "metadata": {
+                    "source": f"openwebui-chat:{document.chat_id}",
+                    "file_id": document.id,
+                    "name": document.title or document.id,
+                    "kind": document.kind,
+                },
+            }
+            for document in spec.context_documents
+        ]
+        if spec.sources:
+            private_context.extend(await self.client.retrieve_private_context(spec.query))
         research_task = asyncio.create_task(
-            self.engine.run(spec, private_context=private_context, progress=self.client.event)
+            self.engine.run(spec, private_context=private_context, progress=self._report_progress)
         )
-        cancellation_task = asyncio.create_task(self._wait_for_cancellation())
+        cancellation_task = asyncio.create_task(self._wait_for_stop())
         try:
             done, _ = await asyncio.wait(
                 {research_task, cancellation_task},
                 timeout=spec.budget.max_wall_time_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if cancellation_task in done and cancellation_task.result():
+            if cancellation_task in done:
+                stop_state = cancellation_task.result()
                 research_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await research_task
-                await self.client.cancelled()
+                if stop_state == JobState.CANCEL_REQUESTED:
+                    await self.client.cancelled()
                 return
             if research_task not in done:
                 research_task.cancel()
@@ -128,28 +165,57 @@ class Runner:
                 await cancellation_task
             await self.client.close()
 
-    async def _wait_for_cancellation(self) -> bool:
+    async def _wait_for_stop(self) -> JobState:
         while True:
-            if await self.client.state() == JobState.CANCEL_REQUESTED:
-                return True
+            try:
+                state = await self.client.state()
+            except httpx.HTTPError as error:
+                # Cancellation polling is advisory. A transient control-plane or
+                # keep-alive disconnect must not terminate otherwise healthy work.
+                log.warning(
+                    "runner.state_poll_failed",
+                    job_id=str(getattr(self.client, "job_id", "unknown")),
+                    error=str(error),
+                )
+                await asyncio.sleep(self.settings.runner_cancel_poll_seconds)
+                continue
+            if state in {JobState.CANCEL_REQUESTED, JobState.FAILED}:
+                return state
             await asyncio.sleep(self.settings.runner_cancel_poll_seconds)
 
+    async def _report_progress(self, event_type: str, data: dict[str, object]) -> None:
+        """Keep progress observable without making it a research failure boundary."""
+        try:
+            await self.client.event(event_type, data)
+        except httpx.HTTPError as error:
+            log.warning(
+                "runner.progress_delivery_failed",
+                job_id=str(getattr(self.client, "job_id", "unknown")),
+                event_type=event_type,
+                error=str(error),
+            )
+
     def _configure_model_gateway(self, spec: RunnerJobSpec) -> None:
-        breadth = min(5, max(1, math.isqrt(spec.budget.max_searches)))
-        depth = min(3, max(1, spec.budget.max_searches // breadth))
+        breadth, depth, max_iterations = plan_deep_research(spec.budget.max_searches)
         os.environ.update(
             {
                 "DEEP_RESEARCH_BREADTH": str(breadth),
                 "DEEP_RESEARCH_DEPTH": str(depth),
-                "MAX_ITERATIONS": str(min(5, max(1, spec.budget.max_searches // 5))),
+                "MAX_ITERATIONS": str(max_iterations),
                 "FAST_TOKEN_LIMIT": str(min(6_000, spec.budget.max_output_tokens)),
                 "SMART_TOKEN_LIMIT": str(min(12_000, spec.budget.max_output_tokens)),
                 "STRATEGIC_TOKEN_LIMIT": str(min(8_000, spec.budget.max_output_tokens)),
+                "MAX_SCRAPED_SOURCE_CHARS": str(
+                    min(20_000, max(4_000, spec.budget.max_input_tokens // 10))
+                ),
+                "MAX_SCRAPED_BATCH_CHARS": str(
+                    min(80_000, max(16_000, spec.budget.max_input_tokens))
+                ),
             }
         )
         if self.settings.model_route != "openwebui":
             return
-        model = self.settings.resolve_model(spec.model_profile)
+        models = spec.models
         endpoint = (
             f"{self.settings.internal_base_url.rstrip('/')}/internal/jobs/{spec.id}/openai/v1"
         )
@@ -157,9 +223,12 @@ class Runner:
             {
                 "OPENAI_API_KEY": self.client.token,
                 "OPENAI_BASE_URL": endpoint,
-                "FAST_LLM": f"openai:{model}",
-                "SMART_LLM": f"openai:{model}",
-                "STRATEGIC_LLM": f"openai:{model}",
+                "FAST_LLM": f"openai:{models.fast}",
+                "SMART_LLM": f"openai:{models.smart}",
+                "STRATEGIC_LLM": f"openai:{models.strategic}",
                 "EMBEDDING": f"openai:{self.settings.embedding_model}",
+                # OpenWebUI embedding models accept text, not token IDs from
+                # OpenAI's model-specific tokenizer.
+                "EMBEDDING_KWARGS": '{"check_embedding_ctx_length":false}',
             }
         )

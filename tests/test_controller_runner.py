@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 
 from open_webui_gpt_researcher.config import Settings
@@ -23,6 +24,13 @@ from open_webui_gpt_researcher.domain import (
 from open_webui_gpt_researcher.executors import DispatchStatus
 from open_webui_gpt_researcher.repository import JobRepository
 from open_webui_gpt_researcher.runner import Runner
+
+MODEL_REQUEST = {
+    "models": {"fast": "test-model", "smart": "test-model", "strategic": "test-model"},
+    "model_capabilities": [
+        {"id": "test-model", "context_length": 128_000, "max_output_tokens": 32_000}
+    ],
+}
 
 
 class RecordingExecutor:
@@ -49,7 +57,9 @@ async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'controller.sqlite'}")
     await database.create_all()
     repository = JobRepository()
-    request = CreateJobRequest(query="Research queues", chat_id="c", message_id="m")
+    request = CreateJobRequest(
+        query="Research queues", chat_id="c", message_id="m", **MODEL_REQUEST
+    )
     async with database.session() as session, session.begin():
         job, _ = await repository.create_job(
             session, user_id="u", idempotency_key="controller-test", request=request
@@ -83,7 +93,9 @@ async def test_controller_requeues_missing_expired_dispatch(tmp_path: Path) -> N
             session,
             user_id="u",
             idempotency_key="reconcile-test",
-            request=CreateJobRequest(query="Recover dispatch", chat_id="c", message_id="m"),
+            request=CreateJobRequest(
+                query="Recover dispatch", chat_id="c", message_id="m", **MODEL_REQUEST
+            ),
         )
         claim = await repository.claim_next(
             session,
@@ -125,7 +137,9 @@ async def test_controller_renews_existing_expired_dispatch(tmp_path: Path) -> No
             session,
             user_id="u",
             idempotency_key="renew-test",
-            request=CreateJobRequest(query="Renew dispatch", chat_id="c", message_id="m"),
+            request=CreateJobRequest(
+                query="Renew dispatch", chat_id="c", message_id="m", **MODEL_REQUEST
+            ),
         )
         claim = await repository.claim_next(
             session,
@@ -160,7 +174,9 @@ async def test_controller_finishes_cancelled_missing_dispatch(tmp_path: Path) ->
             session,
             user_id="u",
             idempotency_key="cancel-reconcile-test",
-            request=CreateJobRequest(query="Cancel dispatch", chat_id="c", message_id="m"),
+            request=CreateJobRequest(
+                query="Cancel dispatch", chat_id="c", message_id="m", **MODEL_REQUEST
+            ),
         )
         claim = await repository.claim_next(
             session,
@@ -242,8 +258,24 @@ class FakeRunnerClient:
             id=uuid4(),
             query="Test runner",
             sources=[{"kind": "collection", "id": "test-knowledge"}],
+            context_documents=[
+                {
+                    "kind": "conversation",
+                    "id": "chat-1",
+                    "chat_id": "chat-1",
+                    "title": "Current chat",
+                    "text": "Prior conversation",
+                }
+            ],
             budget=ResearchBudget(max_wall_time_seconds=60),
-            model_profile="default",
+            models={"fast": "test-model", "smart": "test-model", "strategic": "test-model"},
+            model_capabilities=[
+                {
+                    "id": "test-model",
+                    "context_length": 128_000,
+                    "max_output_tokens": 32_000,
+                }
+            ],
             report_type="deep",
             report_formats=["markdown"],
         )
@@ -303,16 +335,45 @@ class SlowEngine:
 
 async def test_runner_completes_and_configures_budgets(monkeypatch: Any) -> None:
     client = FakeRunnerClient()
-    settings = Settings(model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
+    settings = Settings(default_model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
     monkeypatch.setenv("INTERNAL_BASE_URL", "http://api")
     await Runner(settings=settings, client=client, engine=InstantEngine()).run()  # type: ignore[arg-type]
     assert client.was_started and client.was_closed
     assert client.completion is not None
-    assert client.completion.sources == [{"text": "Test runner"}]
+    assert client.completion.sources == [
+        {
+            "text": "Prior conversation",
+            "metadata": {
+                "source": "openwebui-chat:chat-1",
+                "file_id": "chat-1",
+                "name": "Current chat",
+                "kind": "conversation",
+            },
+        },
+        {"text": "Test runner"},
+    ]
 
 
 async def test_runner_honors_cancel_request() -> None:
     client = FakeRunnerClient(JobState.CANCEL_REQUESTED)
-    settings = Settings(model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
+    settings = Settings(default_model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
     await Runner(settings=settings, client=client, engine=SlowEngine()).run()  # type: ignore[arg-type]
     assert client.was_cancelled and client.was_closed
+
+
+async def test_runner_tolerates_transient_cancellation_poll_disconnect() -> None:
+    client = FakeRunnerClient(JobState.CANCEL_REQUESTED)
+    calls = 0
+
+    async def flaky_state() -> JobState:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("server disconnected")
+        return JobState.CANCEL_REQUESTED
+
+    client.state = flaky_state  # type: ignore[method-assign]
+    settings = Settings(default_model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
+    runner = Runner(settings=settings, client=client, engine=SlowEngine())  # type: ignore[arg-type]
+    assert await runner._wait_for_stop() == JobState.CANCEL_REQUESTED
+    assert calls == 2

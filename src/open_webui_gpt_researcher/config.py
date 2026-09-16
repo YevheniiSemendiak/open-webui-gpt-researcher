@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .domain import ResearchBudget
+from .domain import ModelRoles, ResearchBudget
 
 
 class Settings(BaseSettings):
@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     openwebui_url: str = "http://open-webui:8080"
     openwebui_api_key: SecretStr = SecretStr("")
+    openwebui_timeout_seconds: float = Field(default=600.0, ge=30.0, le=3_600.0)
     function_sources_path: str = "openwebui_functions"
 
     artifact_backend: Literal["filesystem", "s3"] = "filesystem"
@@ -60,15 +61,20 @@ class Settings(BaseSettings):
     dispatch_reconcile_batch_size: int = Field(default=100, ge=1, le=10_000)
     max_concurrent_jobs: int = Field(default=5, ge=1, le=100)
     public_search_enabled: bool = True
+    retriever: str = "searx"
+    scraper: str = "nodriver"
+    searx_url: str = "http://searxng:8080"
     model_route: Literal["openwebui", "direct"] = "openwebui"
-    model_profiles: dict[str, str] = {"default": "gpt-4.1-mini"}
+    default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}
+    model_context_safety_tokens: int = Field(default=256, ge=0, le=8_192)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    runner_cancel_poll_seconds: float = Field(default=5.0, ge=0.5)
+    runner_cancel_poll_seconds: float = Field(default=1.0, ge=0.5)
 
     default_budget: ResearchBudget = ResearchBudget()
-    hard_max_input_tokens: int = 300_000
-    hard_max_output_tokens: int = 64_000
-    hard_max_searches: int = 100
+    hard_max_input_tokens: int = Field(default=300_000, ge=1)
+    hard_max_output_tokens: int = Field(default=64_000, ge=1)  # 64_000
+    hard_max_searches: int = 500
     hard_max_wall_time_seconds: int = 7_200
 
     download_token_ttl_seconds: int = Field(default=604_800, ge=60, le=2_592_000)
@@ -97,6 +103,9 @@ class Settings(BaseSettings):
 
     def validate_budget(self, budget: ResearchBudget) -> None:
         """Reject user refinements above administrator-defined hard limits."""
+        if self.public_search_enabled and budget.max_searches < 4:
+            msg = "max_searches must be at least 4 when public search is enabled"
+            raise ValueError(msg)
         checks = (
             (budget.max_input_tokens, self.hard_max_input_tokens, "max_input_tokens"),
             (budget.max_output_tokens, self.hard_max_output_tokens, "max_output_tokens"),
@@ -112,11 +121,18 @@ class Settings(BaseSettings):
                 msg = f"{name} exceeds administrator limit {maximum}"
                 raise ValueError(msg)
 
-    def resolve_model(self, profile: str) -> str:
+    def resolve_default_models(self, profile: str = "default") -> ModelRoles:
         try:
-            return self.model_profiles[profile]
+            configured = self.default_model_profiles[profile]
         except KeyError as error:
-            raise ValueError(f"unknown model profile: {profile}") from error
+            raise ValueError(f"unknown default model profile: {profile}") from error
+        if isinstance(configured, str):
+            return ModelRoles(
+                fast=configured,
+                smart=configured,
+                strategic=configured,
+            )
+        return configured
 
 
 @lru_cache(maxsize=1)

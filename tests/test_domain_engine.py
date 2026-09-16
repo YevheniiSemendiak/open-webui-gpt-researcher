@@ -10,9 +10,19 @@ from pydantic import ValidationError
 from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.domain import CreateJobRequest, ResearchBudget, RunnerJobSpec
 from open_webui_gpt_researcher.engines import (
+    GatewaySearxRetriever,
     GPTResearcherEngine,
     OpenWebUIRetriever,
+    bound_scraped_results,
+    continuation_query,
+    deduplicate_sources,
+    ensure_iteration_summary,
+    ensure_search_queries,
+    normalize_progress_update,
 )
+
+TEST_MODELS = {"fast": "test-model", "smart": "test-model", "strategic": "test-model"}
+TEST_CAPABILITIES = [{"id": "test-model", "context_length": 128_000, "max_output_tokens": 32_000}]
 
 
 def test_sources_must_be_unique() -> None:
@@ -21,6 +31,8 @@ def test_sources_must_be_unique() -> None:
             query="A valid question",
             chat_id="chat",
             message_id="message",
+            models=TEST_MODELS,
+            model_capabilities=TEST_CAPABILITIES,
             sources=[
                 {"kind": "file", "id": "same"},
                 {"kind": "file", "id": "same"},
@@ -28,13 +40,60 @@ def test_sources_must_be_unique() -> None:
         )
 
 
-def test_settings_validate_budget_and_profile() -> None:
-    settings = Settings(model_profiles={"small": "model-id"})
-    assert settings.resolve_model("small") == "model-id"
-    with pytest.raises(ValueError, match="unknown model profile"):
-        settings.resolve_model("missing")
+def test_settings_validate_budget_and_default_profile() -> None:
+    settings = Settings(default_model_profiles={"small": "model-id"}, hard_max_searches=100)
+    assert settings.resolve_default_models("small").smart == "model-id"
+    with pytest.raises(ValueError, match="unknown default model profile"):
+        settings.resolve_default_models("missing")
     with pytest.raises(ValueError, match="max_searches"):
         settings.validate_budget(ResearchBudget(max_searches=101))
+    with pytest.raises(ValueError, match="at least 4"):
+        settings.validate_budget(ResearchBudget(max_searches=3))
+
+
+def test_settings_resolve_role_specific_model_profile() -> None:
+    settings = Settings(
+        default_model_profiles={
+            "quality": {
+                "fast": "fast-id",
+                "smart": "smart-id",
+                "strategic": "strategic-id",
+            }
+        }
+    )
+    roles = settings.resolve_default_models("quality")
+    assert (roles.fast, roles.smart, roles.strategic) == (
+        "fast-id",
+        "smart-id",
+        "strategic-id",
+    )
+
+
+def test_continuation_query_and_source_deduplication() -> None:
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="Expand the analysis",
+        sources=[],
+        iteration=2,
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    assert "Changes since previous iteration" in continuation_query(spec)
+    report = ensure_iteration_summary("# Revised report", spec)
+    assert report.startswith("## Changes since previous iteration")
+    assert "Expand the analysis" in report
+    assert ensure_iteration_summary(report, spec) == report
+    sources = deduplicate_sources(
+        [
+            {"url": "https://example.com", "title": "one"},
+            {"url": "https://example.com", "title": "duplicate"},
+            {"metadata": {"file_id": "file-1"}, "text": "private"},
+        ]
+    )
+    assert len(sources) == 2
 
 
 def test_settings_use_direct_environment_names(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +140,8 @@ async def test_gpt_researcher_adapter_merges_private_context(
         query="Research with private context",
         sources=[{"kind": "collection", "id": "kb"}],
         budget=ResearchBudget(),
-        model_profile="default",
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
         report_type="deep",
         report_formats=["markdown"],
     )
@@ -92,7 +152,14 @@ async def test_gpt_researcher_adapter_merges_private_context(
     )
     assert result.report_markdown == "# Live report"
     assert result.usage == {"upstream_costs": 1.5}
-    assert events[0][1] == {"stage": "searching"}
+    assert events[0][1]["stage"] == "planning"
+    assert {event[1]["stage"] for event in events} >= {
+        "planning",
+        "searching",
+        "writing",
+        "finalizing",
+    }
+    assert instances[0].retrievers[0] is GatewaySearxRetriever  # type: ignore[union-attr]
     assert OpenWebUIRetriever in instances[0].retrievers  # type: ignore[union-attr]
 
 
@@ -128,7 +195,8 @@ async def test_gpt_researcher_can_use_only_openwebui_sources(
         query="Research private sources",
         sources=[{"kind": "collection", "id": "kb"}],
         budget=ResearchBudget(),
-        model_profile="default",
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
         report_type="deep",
         report_formats=["markdown"],
     )
@@ -142,6 +210,47 @@ async def test_gpt_researcher_can_use_only_openwebui_sources(
     )
     assert result.report_markdown == "# Private-only report"
     assert instances[0].retrievers == [OpenWebUIRetriever]  # type: ignore[union-attr]
+
+
+async def test_empty_upstream_report_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeGPTResearcher:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+            self.retrievers: list[object] = []
+
+        async def conduct_research(self, on_progress: object) -> list[str]:
+            del on_progress
+            return ["evidence"]
+
+        async def write_report(self, *, ext_context: object) -> str:
+            del ext_context
+            return ""
+
+        def get_research_sources(self) -> list[dict[str, object]]:
+            return []
+
+        def get_costs(self) -> float:
+            return 0.0
+
+    monkeypatch.setitem(
+        sys.modules, "gpt_researcher", SimpleNamespace(GPTResearcher=FakeGPTResearcher)
+    )
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="Research something",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+
+    async def progress(event_type: str, data: dict[str, object]) -> None:
+        del event_type, data
+
+    with pytest.raises(RuntimeError, match="empty report"):
+        await GPTResearcherEngine().run(spec, private_context=[], progress=progress)
 
 
 async def test_private_only_research_requires_an_openwebui_source(
@@ -159,7 +268,8 @@ async def test_private_only_research_requires_an_openwebui_source(
         query="Research without evidence",
         sources=[],
         budget=ResearchBudget(),
-        model_profile="default",
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
         report_type="deep",
         report_formats=["markdown"],
     )
@@ -167,7 +277,7 @@ async def test_private_only_research_requires_an_openwebui_source(
     async def progress(event_type: str, data: dict[str, object]) -> None:
         del event_type, data
 
-    with pytest.raises(ValueError, match="no Open WebUI sources"):
+    with pytest.raises(ValueError, match="no Open WebUI context"):
         await GPTResearcherEngine(public_search_enabled=False).run(
             spec, private_context=[], progress=progress
         )
@@ -195,3 +305,140 @@ def test_openwebui_retriever_maps_private_passages(
     result = OpenWebUIRetriever("sub-query").search()
     assert result[0]["raw_content"] == "private passage"
     assert str(result[0]["url"]).startswith("openwebui://source/file-1/")
+
+
+def test_gateway_searx_retriever_routes_through_accounted_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, str]]:
+            return [{"url": "https://example.com", "body": "snippet"}]
+
+    def post(url: str, **kwargs: object) -> Response:
+        request["url"] = url
+        request.update(kwargs)
+        return Response()
+
+    monkeypatch.setenv("INTERNAL_BASE_URL", "http://api")
+    monkeypatch.setenv("JOB_ID", "job-1")
+    monkeypatch.setenv("RUNNER_TOKEN", "runner-token")
+    monkeypatch.setattr("httpx.post", post)
+    result = GatewaySearxRetriever("topic", query_domains=["example.com"]).search(20)
+    assert request["url"] == "http://api/internal/jobs/job-1/public-search"
+    assert request["json"] == {
+        "query": "topic",
+        "max_results": 10,
+        "domains": ["example.com"],
+    }
+    assert result[0]["body"] == "snippet"
+    assert GatewaySearxRetriever.requires_scraping is True
+
+
+def test_scraped_results_are_bounded_per_source_and_batch() -> None:
+    results = [
+        {"url": "https://one", "raw_content": "a" * 10},
+        {"url": "https://two", "raw_content": "b" * 10},
+        {"url": "https://three", "raw_content": "c" * 10},
+    ]
+    bounded = bound_scraped_results(results, per_source_chars=6, total_chars=10)
+    assert [len(item["raw_content"]) for item in bounded] == [6, 4]
+    assert results[0]["raw_content"] == "a" * 10
+
+
+def test_empty_generated_search_queries_fall_back_to_research_question() -> None:
+    assert ensure_search_queries([], "  What   is Open WebUI?  ") == [
+        {
+            "query": "What is Open WebUI?",
+            "researchGoal": "Find authoritative evidence addressing the research question.",
+        }
+    ]
+
+
+def test_existing_generated_search_queries_are_preserved() -> None:
+    generated = [{"query": "topic", "researchGoal": "goal"}]
+    assert ensure_search_queries(generated, "fallback") is generated
+
+
+def test_upstream_progress_object_is_serialized_as_useful_json() -> None:
+    progress = SimpleNamespace(
+        current_depth=2,
+        total_depth=3,
+        current_breadth=1,
+        total_breadth=2,
+        current_query="reliable sources",
+        total_queries=8,
+        completed_queries=3,
+    )
+    assert normalize_progress_update(progress) == {
+        "stage": "researching",
+        "current_depth": 2,
+        "total_depth": 3,
+        "current_breadth": 1,
+        "total_breadth": 2,
+        "total_queries": 8,
+        "completed_queries": 3,
+        "current_query": "reliable sources",
+    }
+
+
+def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> None:
+    import zendriver
+    from gpt_researcher import retrievers
+    from gpt_researcher.actions import report_generation
+    from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
+    from gpt_researcher.skills import browser
+
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine()._configure_upstream(spec)
+
+    assert retrievers.SearxSearch is GatewaySearxRetriever
+    assert NoDriverScraper.max_browsers == 1
+    assert hasattr(browser, "_owui_original_scrape_urls")
+    from gpt_researcher.skills.deep_research import DeepResearchSkill
+
+    assert hasattr(DeepResearchSkill, "_owui_original_generate_search_queries")
+    assert hasattr(report_generation, "_owui_original_create_chat_completion")
+    assert zendriver.Config(headless=True).sandbox is False
+
+
+async def test_upstream_report_generation_is_forced_non_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gpt_researcher.actions import report_generation
+
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine()._configure_upstream(spec)
+    received: dict[str, object] = {}
+
+    async def completion(*args: object, **kwargs: object) -> str:
+        del args
+        received.update(kwargs)
+        return "report"
+
+    monkeypatch.setattr(report_generation, "_owui_original_create_chat_completion", completion)
+    result = await report_generation.create_chat_completion(stream=True)
+    assert result == "report"
+    assert received["stream"] is False

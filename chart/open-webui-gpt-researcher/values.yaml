@@ -28,49 +28,61 @@ ingress:
   pathType: Prefix
   tls: []
 
-config:
-  environment: production
+env:
+  ENVIRONMENT: production
   # Optional browser-reachable base URL used only for signed artifact download links.
   # The API and runners continue to use the ClusterIP Service when this is empty.
-  artifactBaseUrl: ""
-  openwebuiUrl: http://open-webui.open-webui.svc.cluster.local:8080
-  artifactBackend: s3
-  artifactPath: /data/artifacts
-  s3EndpointUrl: https://s3.example.com
-  s3Region: us-east-1
-  s3Bucket: research-artifacts
-  mode: k8s
-  publicSearchEnabled: true
-  modelRoute: openwebui
-  modelProfiles:
-    default: gpt-4.1-mini
-  embeddingModel: sentence-transformers/all-MiniLM-L6-v2
-  maxConcurrentJobs: 5
+  ARTIFACT_BASE_URL: ""
+  OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
+  OPENWEBUI_TIMEOUT_SECONDS: 600
+  ARTIFACT_BACKEND: s3
+  ARTIFACT_PATH: /data/artifacts
+  S3_ENDPOINT_URL: https://s3.example.com
+  S3_REGION: us-east-1
+  S3_BUCKET: research-artifacts
+  MODE: k8s
+  PUBLIC_SEARCH_ENABLED: true
+  # SearXNG is deployed separately; NoDriver runs headlessly inside each runner.
+  RETRIEVER: searx
+  SCRAPER: nodriver
+  SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
+  MODEL_ROUTE: openwebui
+  # Suggestions only. Users choose accessible models for every research run.
+  DEFAULT_MODEL_PROFILES:
+    default:
+      fast: gpt-4.1-mini
+      smart: gpt-4.1
+      strategic: gpt-4.1
+  MODEL_CONTEXT_SAFETY_TOKENS: 256
+  REASONING_EFFORT: ""
+  EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+  MAX_CONCURRENT_JOBS: 5
   # Quoted to preserve all 64 bits through YAML/Helm parsing.
-  controllerLeaderLockId: "7305809465149768307"
-  controllerLeaderRetrySeconds: 5
-  dispatchLeaseSeconds: 120
-  dispatchReconcileBatchSize: 100
-  hardMaxInputTokens: 300000
-  hardMaxOutputTokens: 64000
-  hardMaxSearches: 100
-  hardMaxWallTimeSeconds: 7200
-  eventRetentionDays: 30
-  artifactRetentionDays: 90
-  jobRetentionDays: 90
-  orphanGraceSeconds: 86400
-  cleanupBatchSize: 100
-  runner:
-    activeDeadlineSeconds: 7200
-    ttlSecondsAfterFinished: 3600
-    extraEnvSecret: ""
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: "2"
-        memory: 2Gi
+  CONTROLLER_LEADER_LOCK_ID: "7305809465149768307"
+  CONTROLLER_LEADER_RETRY_SECONDS: 5
+  DISPATCH_LEASE_SECONDS: 120
+  DISPATCH_RECONCILE_BATCH_SIZE: 100
+  HARD_MAX_INPUT_TOKENS: 300000
+  HARD_MAX_OUTPUT_TOKENS: 64000
+  HARD_MAX_SEARCHES: 100
+  HARD_MAX_WALL_TIME_SECONDS: 7200
+  EVENT_RETENTION_DAYS: 30
+  ARTIFACT_RETENTION_DAYS: 90
+  JOB_RETENTION_DAYS: 90
+  ORPHAN_GRACE_SECONDS: 86400
+  CLEANUP_BATCH_SIZE: 100
+
+runner:
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 3600
+  extraEnvSecret: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
 
 database:
   # Defaults to secrets.existingSecret (or the chart-created Secret) when empty.

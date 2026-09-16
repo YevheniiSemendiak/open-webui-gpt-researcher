@@ -31,7 +31,11 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           env:
-            {{- include "research.commonEnv" . | nindent 12 }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "research.databaseSecretName" . }}
+                  key: {{ .Values.database.secretKey }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
       volumes:

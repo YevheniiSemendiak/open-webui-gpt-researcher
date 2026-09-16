@@ -5,10 +5,13 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim-bookworm AS runtime
-RUN groupadd --gid 10001 research \
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 research \
     && useradd --uid 10001 --gid research --create-home --home-dir /home/research research \
     && mkdir -p /app /data/artifacts \
     && chown -R research:research /app /data

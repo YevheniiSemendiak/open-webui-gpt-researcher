@@ -28,9 +28,9 @@ FUNCTION_SOURCES = (
     ),
     FunctionSource(
         id="save_deep_research_to_knowledge",
-        name="Save Deep Research to Knowledge",
+        name="Deep Research Artifacts",
         filename="save_research_to_knowledge.py",
-        description="Save a completed deep-research report to Open WebUI Knowledge.",
+        description="Attach completed artifacts or save a report to Open WebUI Knowledge.",
     ),
 )
 
@@ -80,6 +80,10 @@ class FunctionSync:
             }
             if source.id == "deep_research":
                 valves["public_search_enabled"] = self.settings.public_search_enabled
+                valves["openwebui_url"] = self.settings.openwebui_url
+                valves["default_models"] = self.settings.resolve_default_models().model_dump()
+            else:
+                valves["openwebui_url"] = self.settings.openwebui_url
             valve_response = await self.client.get(f"/api/v1/functions/id/{source.id}/valves")
             valve_response.raise_for_status()
             current_valves = valve_response.json() or {}
@@ -93,8 +97,54 @@ class FunctionSync:
             if not bool(result.get("is_active")):
                 await self._post(f"/api/v1/functions/id/{source.id}/toggle", {})
                 changed.append(f"activated:{source.id}")
+        await self._sync_deep_research_model(changed)
         log.info("openwebui.functions_synced", changes=changed)
         return changed
+
+    async def _sync_deep_research_model(self, changed: list[str]) -> None:
+        response = await self.client.get("/api/v1/models/model", params={"id": "deep_research"})
+        if response.status_code == 404:
+            current = None
+        else:
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("Open WebUI returned invalid model metadata")
+            current = payload
+        meta = dict((current or {}).get("meta") or {})
+        action_ids = list(meta.get("actionIds") or [])
+        if "save_deep_research_to_knowledge" not in action_ids:
+            action_ids.append("save_deep_research_to_knowledge")
+        meta.update(
+            {
+                "description": "Durable, multi-source deep research.",
+                "actionIds": action_ids,
+            }
+        )
+        form: dict[str, object] = {
+            "id": "deep_research",
+            "base_model_id": (current or {}).get("base_model_id"),
+            "name": (current or {}).get("name") or "Deep Research",
+            "meta": meta,
+            "params": dict((current or {}).get("params") or {}),
+            "access_grants": (current or {}).get("access_grants")
+            or [
+                {
+                    "principal_type": "user",
+                    "principal_id": "*",
+                    "permission": "read",
+                }
+            ],
+            "is_active": True,
+        }
+        if current is None:
+            await self._post("/api/v1/models/create", form)
+            changed.append("created:model:deep_research")
+        elif (current.get("meta") or {}).get("actionIds") != action_ids or (
+            current.get("meta") or {}
+        ).get("description") != meta["description"]:
+            await self._post("/api/v1/models/model/update", form)
+            changed.append("updated:model:deep_research")
 
     async def _post(self, path: str, body: dict[str, object]) -> dict[str, object]:
         response = await self.client.post(path, json=body)

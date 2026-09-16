@@ -131,11 +131,10 @@ class KubernetesJobExecutor:
                 name="PUBLIC_SEARCH_ENABLED",
                 value=str(settings.public_search_enabled).lower(),
             ),
+            client.V1EnvVar(name="RETRIEVER", value=settings.retriever),
+            client.V1EnvVar(name="SCRAPER", value=settings.scraper),
+            client.V1EnvVar(name="SEARX_URL", value=settings.searx_url),
             client.V1EnvVar(name="MODEL_ROUTE", value=settings.model_route),
-            client.V1EnvVar(
-                name="MODEL_PROFILES",
-                value=str(settings.model_profiles).replace("'", '"'),
-            ),
             client.V1EnvVar(name="EMBEDDING_MODEL", value=settings.embedding_model),
         ]
         env_from = []

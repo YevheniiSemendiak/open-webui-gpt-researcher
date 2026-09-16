@@ -37,8 +37,43 @@ spec:
           args: ["api"]
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "research.fullname" . }}
           env:
-            {{- include "research.commonEnv" . | nindent 12 }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "research.databaseSecretName" . }}
+                  key: {{ .Values.database.secretKey }}
+            - name: INTERNAL_BASE_URL
+              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.service.port | quote }}
+            - name: RUNNER_IMAGE
+              value: {{ include "research.image" . | quote }}
+            - name: RUNNER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUNNER_OWNER_DEPLOYMENT
+              value: {{ printf "%s-controller" (include "research.fullname" .) | quote }}
+            - name: RUNNER_SERVICE_ACCOUNT
+              value: {{ include "research.runnerServiceAccount" . | quote }}
+            - name: RUNNER_ACTIVE_DEADLINE_SECONDS
+              value: {{ .Values.runner.activeDeadlineSeconds | quote }}
+            - name: RUNNER_TTL_SECONDS_AFTER_FINISHED
+              value: {{ .Values.runner.ttlSecondsAfterFinished | quote }}
+            - name: RUNNER_CPU_REQUEST
+              value: {{ .Values.runner.resources.requests.cpu | quote }}
+            - name: RUNNER_MEMORY_REQUEST
+              value: {{ .Values.runner.resources.requests.memory | quote }}
+            - name: RUNNER_CPU_LIMIT
+              value: {{ .Values.runner.resources.limits.cpu | quote }}
+            - name: RUNNER_MEMORY_LIMIT
+              value: {{ .Values.runner.resources.limits.memory | quote }}
+            {{- if .Values.runner.extraEnvSecret }}
+            - name: RUNNER_EXTRA_ENV_SECRET
+              value: {{ .Values.runner.extraEnvSecret | quote }}
+            {{- end }}
             {{- include "research.apiSecretEnv" . | nindent 12 }}
             {{- include "research.artifactSecretEnv" . | nindent 12 }}
           ports:
@@ -94,8 +129,43 @@ spec:
           args: ["controller"]
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "research.fullname" . }}
           env:
-            {{- include "research.commonEnv" . | nindent 12 }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "research.databaseSecretName" . }}
+                  key: {{ .Values.database.secretKey }}
+            - name: INTERNAL_BASE_URL
+              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.service.port | quote }}
+            - name: RUNNER_IMAGE
+              value: {{ include "research.image" . | quote }}
+            - name: RUNNER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUNNER_OWNER_DEPLOYMENT
+              value: {{ printf "%s-controller" (include "research.fullname" .) | quote }}
+            - name: RUNNER_SERVICE_ACCOUNT
+              value: {{ include "research.runnerServiceAccount" . | quote }}
+            - name: RUNNER_ACTIVE_DEADLINE_SECONDS
+              value: {{ .Values.runner.activeDeadlineSeconds | quote }}
+            - name: RUNNER_TTL_SECONDS_AFTER_FINISHED
+              value: {{ .Values.runner.ttlSecondsAfterFinished | quote }}
+            - name: RUNNER_CPU_REQUEST
+              value: {{ .Values.runner.resources.requests.cpu | quote }}
+            - name: RUNNER_MEMORY_REQUEST
+              value: {{ .Values.runner.resources.requests.memory | quote }}
+            - name: RUNNER_CPU_LIMIT
+              value: {{ .Values.runner.resources.limits.cpu | quote }}
+            - name: RUNNER_MEMORY_LIMIT
+              value: {{ .Values.runner.resources.limits.memory | quote }}
+            {{- if .Values.runner.extraEnvSecret }}
+            - name: RUNNER_EXTRA_ENV_SECRET
+              value: {{ .Values.runner.extraEnvSecret | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           volumeMounts:

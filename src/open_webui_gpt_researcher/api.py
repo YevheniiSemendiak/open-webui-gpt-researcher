@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Any
@@ -29,9 +30,10 @@ from .db import Database, ResearchJob
 from .domain import (
     CreateJobRequest,
     JobState,
+    ModelCapability,
+    ModelRoles,
     RunnerCompletion,
     RunnerEvent,
-    SaveToKnowledgeRequest,
 )
 from .executors import make_executor
 from .openwebui import OpenWebUIClient, OpenWebUIError
@@ -45,6 +47,7 @@ from .repository import (
     to_job_view,
     to_runner_spec,
 )
+from .search import PublicSearchError, SearxClient
 
 log = structlog.get_logger()
 Principal = Annotated[OpenWebUIPrincipal, Depends(require_openwebui_principal)]
@@ -57,6 +60,11 @@ class ErrorBody(BaseModel):
 
 class SearchBody(BaseModel):
     query: str = Field(min_length=1, max_length=50_000)
+
+
+class PublicSearchBody(SearchBody):
+    max_results: int = Field(default=5, ge=1, le=10)
+    domains: list[str] = Field(default_factory=list, max_length=20)
 
 
 def make_artifact_store(settings: Settings) -> ArtifactStore:
@@ -77,6 +85,7 @@ def create_app(
     database: Database | None = None,
     artifact_store: ArtifactStore | None = None,
     openwebui: OpenWebUIClient | None = None,
+    public_search: SearxClient | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     settings.validate_api_secrets()
@@ -84,8 +93,11 @@ def create_app(
     repository = JobRepository()
     artifact_store = artifact_store or make_artifact_store(settings)
     openwebui = openwebui or OpenWebUIClient(
-        base_url=settings.openwebui_url, api_key=settings.openwebui_api_key.get_secret_value()
+        base_url=settings.openwebui_url,
+        api_key=settings.openwebui_api_key.get_secret_value(),
+        timeout=settings.openwebui_timeout_seconds,
     )
+    public_search = public_search or SearxClient(settings.searx_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -122,6 +134,7 @@ def create_app(
     app.state.repository = repository
     app.state.artifact_store = artifact_store
     app.state.openwebui = openwebui
+    app.state.public_search = public_search
     app.state.settings = settings
 
     @app.get("/health/live", include_in_schema=False)
@@ -134,6 +147,27 @@ def create_app(
             await session.execute(text("SELECT 1"))
         return {"status": "ok"}
 
+    @app.get("/v1/models")
+    async def list_accessible_models(
+        principal: Principal,
+        authorization: Annotated[str, Header()],
+    ) -> dict[str, list[dict[str, Any]]]:
+        try:
+            accessible = await openwebui.list_models(authorization=authorization)
+            authoritative = await openwebui.list_models()
+        except OpenWebUIError as error:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+        accessible_ids = {str(item["id"]) for item in accessible}
+        resolved = [item for item in authoritative if str(item["id"]) in accessible_ids]
+        log.info(
+            "openwebui.model_catalog_resolved",
+            user_id=principal.user_id,
+            accessible_model_count=len(accessible_ids),
+            authoritative_model_count=len(authoritative),
+            resolved_model_count=len(resolved),
+        )
+        return {"data": resolved}
+
     @app.post("/v1/research-jobs", status_code=status.HTTP_202_ACCEPTED)
     async def create_job(
         request: CreateJobRequest,
@@ -142,7 +176,6 @@ def create_app(
     ) -> JSONResponse:
         try:
             settings.validate_budget(request.budget)
-            settings.resolve_model(request.model_profile)
         except ValueError as error:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
         try:
@@ -178,6 +211,24 @@ def create_app(
             status_code=status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK,
             content=view.model_dump(mode="json"),
         )
+
+    @app.get("/v1/research-jobs/resolve")
+    async def resolve_job(
+        principal: Principal,
+        chat_id: Annotated[str, Query(min_length=1, max_length=255)],
+        message_id: Annotated[str, Query(min_length=1, max_length=255)],
+    ) -> dict[str, str]:
+        try:
+            async with database.session() as session:
+                job = await repository.get_by_chat_message(
+                    session,
+                    user_id=principal.user_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+        except JobNotFoundError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
+        return {"id": job.id, "state": job.state}
 
     @app.get("/v1/research-jobs/{job_id}")
     async def get_job(job_id: UUID, principal: Principal) -> dict[str, object]:
@@ -267,39 +318,36 @@ def create_app(
             headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'},
         )
 
-    @app.post("/v1/research-jobs/{job_id}:save-to-knowledge")
-    async def save_to_knowledge(
-        job_id: UUID,
-        request: SaveToKnowledgeRequest,
-        principal: Principal,
-    ) -> dict[str, str]:
+    @app.get("/v1/research-jobs/{job_id}/artifacts")
+    async def list_job_artifacts(job_id: UUID, principal: Principal) -> list[dict[str, object]]:
         try:
             async with database.session() as session:
-                job = await repository.get_for_user(
-                    session, job_id=job_id, user_id=principal.user_id
-                )
-                if job.state != JobState.SUCCEEDED.value:
-                    raise HTTPException(status.HTTP_409_CONFLICT, "job is not complete")
-                artifact = await repository.get_artifact(session, job_id=job_id, name="report.md")
-            content = await artifact_store.get(artifact.object_key)
-            file_id = await openwebui.upload_markdown(
-                name=f"deep-research-{job_id}.md", content=content
-            )
-            if request.name:
-                knowledge_id = await openwebui.create_knowledge(
-                    name=request.name, owner_user_id=principal.user_id
-                )
-            else:
-                knowledge_id = str(request.knowledge_id)
-                await openwebui.assert_knowledge_write_access(
-                    knowledge_id=knowledge_id, user_id=principal.user_id
-                )
-            await openwebui.add_file_to_knowledge(knowledge_id=knowledge_id, file_id=file_id)
-            return {"knowledge_id": knowledge_id, "file_id": file_id}
+                await repository.get_for_user(session, job_id=job_id, user_id=principal.user_id)
+                artifacts = await repository.list_artifacts(session, job_id=job_id)
         except JobNotFoundError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
-        except OpenWebUIError as error:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+        return [
+            {"name": item.name, "media_type": item.media_type, "size": item.size}
+            for item in artifacts
+        ]
+
+    @app.get("/v1/research-jobs/{job_id}/artifacts/{artifact_name}/content")
+    async def fetch_artifact_for_openwebui(
+        job_id: UUID, artifact_name: str, principal: Principal
+    ) -> Response:
+        """Return an artifact to the trusted Open WebUI action over the private network."""
+        try:
+            async with database.session() as session:
+                await repository.get_for_user(session, job_id=job_id, user_id=principal.user_id)
+                artifact = await repository.get_artifact(session, job_id=job_id, name=artifact_name)
+            content = await artifact_store.get(artifact.object_key)
+        except (JobNotFoundError, FileNotFoundError) as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "artifact not found") from error
+        return Response(
+            content,
+            media_type=artifact.media_type,
+            headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'},
+        )
 
     @app.get("/internal/jobs/{job_id}")
     async def runner_job(job_id: UUID, runner_token: RunnerToken) -> dict[str, object]:
@@ -324,7 +372,8 @@ def create_app(
                 job = await repository.mark_started(
                     session, job_id=job_id, runner_token=runner_token
                 )
-                return {"state": job.state}
+            await _publish_progress(openwebui, job, {"stage": "starting"})
+            return {"state": job.state}
         except (JobNotFoundError, InvalidStateError) as error:
             raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
 
@@ -341,7 +390,12 @@ def create_app(
                     event_type=event.event_type,
                     data=event.data,
                 )
-                return {"sequence": stored.sequence}
+                job = await repository.get_for_runner(
+                    session, job_id=job_id, runner_token=runner_token
+                )
+            if event.event_type == "research.progress":
+                await _publish_progress(openwebui, job, event.data)
+            return {"sequence": stored.sequence}
         except (JobNotFoundError, InvalidStateError) as error:
             raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
 
@@ -350,26 +404,72 @@ def create_app(
         job_id: UUID, body: SearchBody, runner_token: RunnerToken
     ) -> list[dict[str, object]]:
         try:
+            budget_failure: ResearchJob | None = None
             async with database.session() as session, session.begin():
-                job = await repository.get_for_runner(
+                job = await repository.get_for_runner_locked(
                     session, job_id=job_id, runner_token=runner_token
                 )
                 _ensure_active(job)
                 current_searches = int((job.usage or {}).get("searches", 0))
                 maximum = int(job.budget["max_searches"])
                 if current_searches >= maximum:
-                    raise HTTPException(
-                        status.HTTP_429_TOO_MANY_REQUESTS, "search budget exhausted"
+                    budget_failure = await repository.mark_failed(
+                        session,
+                        job_id=job_id,
+                        runner_token=runner_token,
+                        error="search budget exhausted",
                     )
-                await repository.consume_usage(
-                    session, job_id=job_id, runner_token=runner_token, searches=1
-                )
+                else:
+                    await repository.consume_usage(
+                        session, job_id=job_id, runner_token=runner_token, searches=1
+                    )
                 sources = to_runner_spec(job).sources
+            if budget_failure is not None:
+                await _publish_failure(openwebui, budget_failure, "search budget exhausted")
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "search budget exhausted")
             passages = await openwebui.retrieve(query=body.query, sources=sources)
             return [{"text": passage.text, "metadata": passage.metadata} for passage in passages]
         except JobNotFoundError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
         except OpenWebUIError as error:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+
+    @app.post("/internal/jobs/{job_id}/public-search")
+    async def runner_public_search(
+        job_id: UUID, body: PublicSearchBody, runner_token: RunnerToken
+    ) -> list[dict[str, str]]:
+        try:
+            budget_failure: ResearchJob | None = None
+            async with database.session() as session, session.begin():
+                job = await repository.get_for_runner_locked(
+                    session, job_id=job_id, runner_token=runner_token
+                )
+                _ensure_active(job)
+                if not settings.public_search_enabled:
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "public search is disabled")
+                current = int((job.usage or {}).get("searches", 0))
+                if current >= int(job.budget["max_searches"]):
+                    budget_failure = await repository.mark_failed(
+                        session,
+                        job_id=job_id,
+                        runner_token=runner_token,
+                        error="search budget exhausted",
+                    )
+                else:
+                    await repository.consume_usage(
+                        session, job_id=job_id, runner_token=runner_token, searches=1
+                    )
+            if budget_failure is not None:
+                await _publish_failure(openwebui, budget_failure, "search budget exhausted")
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "search budget exhausted")
+            return await public_search.search(
+                query=body.query,
+                max_results=body.max_results,
+                domains=body.domains,
+            )
+        except JobNotFoundError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
+        except PublicSearchError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
 
     @app.post("/internal/jobs/{job_id}/complete")
@@ -427,7 +527,7 @@ def create_app(
                     result=result,
                 )
             if job.state == JobState.SUCCEEDED.value:
-                await _publish_completion(openwebui, job, completion.report_markdown, links)
+                await _publish_completion(openwebui, job, completion.report_markdown)
             return {"state": job.state}
         except (JobNotFoundError, InvalidStateError) as error:
             raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
@@ -465,25 +565,102 @@ def create_app(
     async def proxy_chat_completion(
         job_id: UUID, payload: dict[str, Any], runner_token: RunnerToken
     ) -> Response:
-        job = await _runner_job(database, repository, job_id, runner_token)
-        _ensure_active(job)
-        allowed_model = settings.resolve_model(job.model_profile)
-        usage = job.usage or {}
-        if int(usage.get("input_tokens", 0)) >= int(job.budget["max_input_tokens"]):
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "input token budget exhausted")
-        remaining = int(job.budget["max_output_tokens"]) - int(usage.get("output_tokens", 0))
-        if remaining <= 0:
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "output token budget exhausted")
+        estimated_input = _estimate_input_tokens(payload)
+        budget_error: str | None = None
+        budget_failure: ResearchJob | None = None
+        async with database.session() as session, session.begin():
+            job = await repository.get_for_runner_locked(
+                session, job_id=job_id, runner_token=runner_token
+            )
+            _ensure_active(job)
+            model_roles = ModelRoles.model_validate(job.models)
+            capabilities = {
+                capability.id: capability
+                for capability in (
+                    ModelCapability.model_validate(item) for item in job.model_capabilities
+                )
+            }
+            usage = job.usage or {}
+            remaining_input = int(job.budget["max_input_tokens"]) - int(
+                usage.get("input_tokens", 0)
+            )
+            remaining_output = int(job.budget["max_output_tokens"]) - int(
+                usage.get("output_tokens", 0)
+            )
+            requested_model = str(payload.get("model") or model_roles.smart)
+            capability = capabilities.get(requested_model)
+            if capability is None:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "runner attempted to use a model outside the user's frozen model selection",
+                )
+            model_output_capacity = (
+                capability.context_length - estimated_input - settings.model_context_safety_tokens
+            )
+            if estimated_input > remaining_input:
+                budget_error = (
+                    "input token budget exhausted: request needs approximately "
+                    f"{estimated_input} tokens, {remaining_input} remain"
+                )
+            elif remaining_output <= 0:
+                budget_error = "output token budget exhausted"
+            elif model_output_capacity <= 0:
+                budget_error = (
+                    f"model context exhausted: request needs approximately {estimated_input} "
+                    f"input tokens but {requested_model} has a "
+                    f"{capability.context_length} token context window"
+                )
+            if budget_error is not None:
+                budget_failure = await repository.mark_failed(
+                    session,
+                    job_id=job_id,
+                    runner_token=runner_token,
+                    error=budget_error,
+                )
+            else:
+                await repository.consume_usage(
+                    session,
+                    job_id=job_id,
+                    runner_token=runner_token,
+                    input_tokens=estimated_input,
+                )
+        if budget_error is not None and budget_failure is not None:
+            await _publish_failure(openwebui, budget_failure, budget_error)
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, budget_error)
         request_payload = dict(payload)
+        if settings.reasoning_effort is not None:
+            request_payload["reasoning_effort"] = settings.reasoning_effort
+        output_limit = min(
+            remaining_output,
+            model_output_capacity,
+            capability.max_output_tokens,
+        )
+        found_output_limit = False
         for key in ("max_tokens", "max_completion_tokens"):
             if key in request_payload:
-                request_payload[key] = min(int(request_payload[key]), remaining)
+                request_payload[key] = min(int(request_payload[key]), output_limit)
+                found_output_limit = True
+        if not found_output_limit:
+            request_payload["max_tokens"] = output_limit
         request_payload["stream"] = False
         try:
             response = await openwebui.proxy_chat_completions(
-                payload=request_payload, allowed_model=allowed_model
+                payload=request_payload,
+                allowed_models={
+                    model_roles.fast,
+                    model_roles.smart,
+                    model_roles.strategic,
+                },
+                default_model=model_roles.smart,
             )
         except OpenWebUIError as error:
+            async with database.session() as session, session.begin():
+                await repository.consume_usage(
+                    session,
+                    job_id=job_id,
+                    runner_token=runner_token,
+                    input_tokens=-estimated_input,
+                )
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
         data = response.json()
         provider_usage = data.get("usage", {}) if isinstance(data, dict) else {}
@@ -498,13 +675,23 @@ def create_app(
                 session,
                 job_id=job_id,
                 runner_token=runner_token,
-                input_tokens=input_tokens,
+                input_tokens=input_tokens - estimated_input,
                 output_tokens=output_tokens,
             )
         if totals["input_tokens"] > int(job.budget["max_input_tokens"]) or totals[
             "output_tokens"
         ] > int(job.budget["max_output_tokens"]):
+            budget_message = "model usage exceeded the job token budget"
+            async with database.session() as session, session.begin():
+                failed_job = await repository.mark_failed(
+                    session,
+                    job_id=job_id,
+                    runner_token=runner_token,
+                    error=budget_message,
+                )
             log.warning("runner.token_budget_exceeded", job_id=str(job_id), usage=totals)
+            await _publish_failure(openwebui, failed_job, budget_message)
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, budget_message)
         return JSONResponse(content=data)
 
     @app.post("/internal/jobs/{job_id}/openai/v1/embeddings")
@@ -522,6 +709,12 @@ def create_app(
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
 
     return app
+
+
+def _estimate_input_tokens(payload: dict[str, Any]) -> int:
+    """Conservative model-agnostic estimate used to reject oversized prompts early."""
+    serialized = json.dumps(payload.get("messages", []), ensure_ascii=False, default=str)
+    return max(1, math.ceil(len(serialized.encode("utf-8")) / 3) + 16)
 
 
 async def _runner_job(
@@ -561,25 +754,57 @@ async def _publish_completion(
     client: OpenWebUIClient,
     job: ResearchJob,
     report: str,
-    links: dict[str, str],
 ) -> None:
-    download_section = ""
-    if links:
-        downloads = "\n".join(f"- [{name}]({url})" for name, url in links.items())
-        download_section = f"\n\n## Downloads\n\n{downloads}"
-    content = f"{report}{download_section}\n\n<!-- deep-research-job:{job.id} -->"
     with suppress(OpenWebUIError, httpx.HTTPError):
         await client.emit_message_event(
             chat_id=job.chat_id,
             message_id=job.message_id,
-            event_type="message",
-            data={"content": content},
+            event_type="replace",
+            data={"content": report},
         )
         await client.emit_message_event(
             chat_id=job.chat_id,
             message_id=job.message_id,
             event_type="status",
-            data={"description": "Deep research complete", "done": True},
+            data={
+                "description": "Deep research complete",
+                "done": True,
+                "job_id": str(job.id),
+            },
+        )
+
+
+def _progress_description(data: dict[str, object]) -> str:
+    stage = str(data.get("stage", "researching"))
+    descriptions = {
+        "starting": "Deep research in progress: starting the research worker…",
+        "retrieval": "Deep research in progress: preparing attached sources…",
+        "planning": "Deep research in progress: planning searches and sources…",
+        "searching": "Deep research in progress: searching for evidence…",
+        "researching": "Deep research in progress: reading and comparing sources…",
+        "writing": "Deep research in progress: writing the report…",
+        "finalizing": "Deep research in progress: finalizing report artifacts…",
+    }
+    description = descriptions.get(stage, descriptions["researching"])
+    current = data.get("current_query")
+    if isinstance(current, str) and current.strip():
+        description = f"{description.rstrip('…')} — {current.strip()[:160]}…"
+    completed = data.get("completed_queries")
+    total = data.get("total_queries")
+    if isinstance(completed, int) and isinstance(total, int) and total > 0:
+        description = f"{description} ({completed}/{total} research queries complete)"
+    return description
+
+
+async def _publish_progress(
+    client: OpenWebUIClient, job: ResearchJob, data: dict[str, object]
+) -> None:
+    with suppress(OpenWebUIError, httpx.HTTPError):
+        await client.emit_message_event(
+            chat_id=job.chat_id,
+            message_id=job.message_id,
+            event_type="status",
+            data={"description": _progress_description(data), "done": False},
         )
 
 

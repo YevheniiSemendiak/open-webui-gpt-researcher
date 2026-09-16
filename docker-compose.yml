@@ -6,15 +6,23 @@ x-research-environment: &research-environment
   ARTIFACT_BASE_URL: http://localhost:8090
   INTERNAL_BASE_URL: http://api:8090
   OPENWEBUI_URL: http://open-webui:8080
+  OPENWEBUI_TIMEOUT_SECONDS: ${OPENWEBUI_TIMEOUT_SECONDS:-600}
   ARTIFACT_BACKEND: s3
   S3_ENDPOINT_URL: http://minio:9000
   S3_BUCKET: research-artifacts
   MODE: local
   PUBLIC_SEARCH_ENABLED: ${PUBLIC_SEARCH_ENABLED:-true}
+  RETRIEVER: ${RETRIEVER:-searx}
+  SCRAPER: ${SCRAPER:-nodriver}
+  SEARX_URL: ${SEARX_URL:-http://searxng:8080}
   MODEL_ROUTE: ${MODEL_ROUTE:-openwebui}
-  MODEL_PROFILES: '${MODEL_PROFILES:-{"default":"gpt-4.1-mini"}}'
+  DEFAULT_MODEL_PROFILES: '${DEFAULT_MODEL_PROFILES:-{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}}'
+  MODEL_CONTEXT_SAFETY_TOKENS: ${MODEL_CONTEXT_SAFETY_TOKENS:-256}
+  REASONING_EFFORT: ${REASONING_EFFORT:-}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
   MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
+  HARD_MAX_INPUT_TOKENS: ${HARD_MAX_INPUT_TOKENS:-3000000}
+  HARD_MAX_OUTPUT_TOKENS: ${HARD_MAX_OUTPUT_TOKENS:-3000000}
   DISPATCH_LEASE_SECONDS: ${DISPATCH_LEASE_SECONDS:-120}
   DISPATCH_RECONCILE_BATCH_SIZE: ${DISPATCH_RECONCILE_BATCH_SIZE:-100}
   EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-30}
@@ -69,6 +77,20 @@ services:
         mc alias set local http://minio:9000 minio minio-secret
         && mc mb --ignore-existing local/research-artifacts
 
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest@sha256:f1aca3f61c7ff4552b8d54c0ab7fb458e907b78f51c503210cf450c900adca2c}
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+    volumes:
+      - ./dev/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8081}:8080"
+
   migrate:
     build: .
     command: ["migrate"]
@@ -87,16 +109,21 @@ services:
       OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
       S3_ACCESS_KEY_ID: minio
       S3_SECRET_ACCESS_KEY: minio-secret
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      RETRIEVER: ${RETRIEVER:-tavily}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+      searxng:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health/ready')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8090/health/ready')",
+        ]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -113,7 +140,13 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')",
+        ]
       interval: 5s
       timeout: 5s
       retries: 30

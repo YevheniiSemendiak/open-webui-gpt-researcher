@@ -65,6 +65,9 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
         runner_image="registry/research:v1",
         runner_owner_deployment="research-controller",
         runner_extra_env_secret="provider-credentials",
+        retriever="searx",
+        scraper="nodriver",
+        searx_url="http://searxng:8080",
     )
     executor = KubernetesJobExecutor(settings)
     executor._configured = True
@@ -84,6 +87,10 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
     assert container.security_context.read_only_root_filesystem is True
     env_names = {item.name for item in container.env}
     assert "OPENWEBUI_API_KEY" not in env_names
+    env = {item.name: item.value for item in container.env}
+    assert env["RETRIEVER"] == "searx"
+    assert env["SCRAPER"] == "nodriver"
+    assert env["SEARX_URL"] == "http://searxng:8080"
     assert job.metadata.labels["job-attempt"] == "3"
     assert job.metadata.name.endswith("-3")
     assert await executor.inspect(job_id=job_id, attempt=3) == DispatchStatus.ACTIVE

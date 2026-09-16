@@ -22,8 +22,17 @@ def upgrade() -> None:
         sa.Column("chat_id", sa.String(255), nullable=False),
         sa.Column("message_id", sa.String(255), nullable=False),
         sa.Column("sources", sa.JSON(), nullable=False),
+        sa.Column("context_documents", sa.JSON(), nullable=False),
+        sa.Column(
+            "parent_job_id",
+            sa.String(36),
+            sa.ForeignKey("research_jobs.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column("iteration", sa.Integer(), nullable=False),
         sa.Column("budget", sa.JSON(), nullable=False),
-        sa.Column("model_profile", sa.String(100), nullable=False),
+        sa.Column("models", sa.JSON(), nullable=False),
+        sa.Column("model_capabilities", sa.JSON(), nullable=False),
         sa.Column("report_type", sa.String(100), nullable=False),
         sa.Column("report_formats", sa.JSON(), nullable=False),
         sa.Column("state", sa.String(32), nullable=False),
@@ -40,6 +49,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("user_id", "idempotency_key", name="uq_job_user_idempotency"),
     )
     op.create_index("ix_research_jobs_user_id", "research_jobs", ["user_id"])
+    op.create_index("ix_research_jobs_parent_job_id", "research_jobs", ["parent_job_id"])
     op.create_index("ix_research_jobs_state", "research_jobs", ["state"])
     op.create_index("ix_research_jobs_state_created", "research_jobs", ["state", "created_at"])
     op.create_index(

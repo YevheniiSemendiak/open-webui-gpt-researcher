@@ -69,78 +69,18 @@ class OpenWebUIClient:
         )
         self._raise_for_status(response)
 
-    async def upload_markdown(self, *, name: str, content: bytes) -> str:
-        response = await self._request(
-            "POST",
-            "/api/v1/files/",
-            files={"file": (name, content, "text/markdown")},
-        )
-        payload = self._checked_json(response)
-        if not isinstance(payload, dict):
-            raise OpenWebUIError("Open WebUI file upload returned invalid metadata")
-        file_id = payload.get("id")
-        if not isinstance(file_id, str):
-            raise OpenWebUIError("Open WebUI file upload returned no id")
-        return file_id
-
-    async def create_knowledge(self, *, name: str, owner_user_id: str) -> str:
-        grants = [
-            {
-                "principal_type": "user",
-                "principal_id": owner_user_id,
-                "permission": "write",
-            }
-        ]
-        response = await self._request(
-            "POST",
-            "/api/v1/knowledge/create",
-            json={
-                "name": name,
-                "description": "Created from a deep-research report",
-                "access_grants": grants,
-            },
-        )
-        payload = self._checked_json(response)
-        if not isinstance(payload, dict):
-            raise OpenWebUIError("Open WebUI knowledge creation returned invalid metadata")
-        knowledge_id = payload.get("id")
-        if not isinstance(knowledge_id, str):
-            raise OpenWebUIError("Open WebUI knowledge creation returned no id")
-        return knowledge_id
-
-    async def add_file_to_knowledge(self, *, knowledge_id: str, file_id: str) -> None:
-        response = await self._request(
-            "POST", f"/api/v1/knowledge/{knowledge_id}/file/add", json={"file_id": file_id}
-        )
-        self._raise_for_status(response)
-
-    async def assert_knowledge_write_access(self, *, knowledge_id: str, user_id: str) -> None:
-        response = await self._request("GET", f"/api/v1/knowledge/{knowledge_id}")
-        payload = self._checked_json(response)
-        if not isinstance(payload, dict):
-            raise OpenWebUIError("Open WebUI returned invalid knowledge metadata")
-        if payload.get("user_id") == user_id:
-            return
-        grants = payload.get("access_grants", [])
-        if isinstance(grants, list):
-            for grant in grants:
-                if (
-                    isinstance(grant, dict)
-                    and grant.get("principal_type") == "user"
-                    and grant.get("principal_id") == user_id
-                    and grant.get("permission") == "write"
-                ):
-                    return
-        raise OpenWebUIError("user does not have direct write access to this knowledge base")
-
     async def proxy_chat_completions(
-        self, *, payload: dict[str, Any], allowed_model: str
+        self,
+        *,
+        payload: dict[str, Any],
+        allowed_models: set[str],
+        default_model: str,
     ) -> httpx.Response:
         requested_model = payload.get("model")
-        if requested_model not in {allowed_model, None}:
-            raise OpenWebUIError("runner attempted to use a model outside its profile")
+        if requested_model not in allowed_models | {None}:
+            raise OpenWebUIError("runner attempted to use a model outside its frozen selection")
         proxied = dict(payload)
-        proxied["model"] = allowed_model
+        proxied["model"] = requested_model or default_model
         response = await self._request("POST", "/api/chat/completions", json=proxied)
         self._raise_for_status(response)
         return response
@@ -151,6 +91,14 @@ class OpenWebUIClient:
         response = await self._request("POST", "/api/v1/embeddings", json=proxied)
         self._raise_for_status(response)
         return response
+
+    async def list_models(self, *, authorization: str | None = None) -> list[dict[str, Any]]:
+        headers = {"Authorization": authorization} if authorization else None
+        response = await self._request("GET", "/api/models", headers=headers)
+        payload = self._checked_json(response)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise OpenWebUIError("Open WebUI returned an invalid model catalog")
+        return [item for item in payload["data"] if isinstance(item, dict) and item.get("id")]
 
     @staticmethod
     def _parse_retrieval_response(payload: object) -> list[RetrievedPassage]:

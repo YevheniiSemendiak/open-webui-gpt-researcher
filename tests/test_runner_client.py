@@ -5,7 +5,14 @@ from uuid import uuid4
 import httpx
 
 from open_webui_gpt_researcher.domain import RunnerCompletion
-from open_webui_gpt_researcher.runner import RunnerClient
+from open_webui_gpt_researcher.runner import RunnerClient, plan_deep_research
+
+
+def test_deep_research_plan_respects_known_upstream_search_fanout() -> None:
+    assert plan_deep_research(4) == (1, 1, 1)
+    assert plan_deep_research(6) == (1, 1, 3)
+    assert plan_deep_research(30) == (2, 2, 2)
+    assert plan_deep_research(60) == (2, 3, 2)
 
 
 async def test_runner_client_protocol() -> None:
@@ -23,7 +30,18 @@ async def test_runner_client_protocol() -> None:
                     "query": "question",
                     "sources": [],
                     "budget": {},
-                    "model_profile": "default",
+                    "models": {
+                        "fast": "test-model",
+                        "smart": "test-model",
+                        "strategic": "test-model",
+                    },
+                    "model_capabilities": [
+                        {
+                            "id": "test-model",
+                            "context_length": 128000,
+                            "max_output_tokens": 32000,
+                        }
+                    ],
                     "report_type": "deep",
                     "report_formats": ["markdown"],
                 },

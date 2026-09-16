@@ -14,6 +14,7 @@ from open_webui_gpt_researcher.config import Settings
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
+        _env_file=None,
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite'}",
         artifact_backend="filesystem",
         artifact_path=str(tmp_path / "artifacts"),
@@ -23,7 +24,10 @@ def settings(tmp_path: Path) -> Settings:
         signing_secret="test-signing-secret-with-more-than-32-bytes",
         auto_create_schema=True,
         mode="k8s",
-        model_profiles={"default": "test-model"},
+        default_model_profiles={"default": "test-model"},
+        hard_max_input_tokens=300_000,
+        hard_max_output_tokens=64_000,
+        hard_max_searches=100,
     )
 
 
@@ -59,7 +63,14 @@ def job_payload() -> dict[str, object]:
             "max_searches": 5,
             "max_wall_time_seconds": 300,
         },
-        "model_profile": "default",
+        "models": {"fast": "test-model", "smart": "test-model", "strategic": "test-model"},
+        "model_capabilities": [
+            {
+                "id": "test-model",
+                "context_length": 128_000,
+                "max_output_tokens": 32_000,
+            }
+        ],
         "report_type": "deep",
         "report_formats": ["markdown", "json"],
     }

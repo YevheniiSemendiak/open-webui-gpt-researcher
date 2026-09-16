@@ -41,6 +41,14 @@ jobs:
       - run: helm lint chart/open-webui-gpt-researcher
       - run: helm template test chart/open-webui-gpt-researcher >/dev/null
 
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - run: docker compose config --quiet
+      - run: docker compose -f docker-compose.yml -f docker-compose.firecrawl.yaml config --quiet
+
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -33,9 +33,10 @@ spec:
           args: ["sync-functions"]
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "research.fullname" . }}
           env:
-            - name: OPENWEBUI_URL
-              value: {{ .Values.config.openwebuiUrl | quote }}
             - name: OPENWEBUI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -48,8 +49,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "research.secretName" . }}
                   key: service-token
-            - name: PUBLIC_SEARCH_ENABLED
-              value: {{ .Values.config.publicSearchEnabled | quote }}
             - name: FUNCTION_SOURCES_PATH
               value: /app/openwebui_functions
           resources:

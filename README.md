@@ -6,27 +6,35 @@ Asynchronous, multi-user deep research for
 
 ## Accepted decisions
 
-- Open WebUI owns users, chats, attachments, Knowledge, models, and embeddings.
-- A Pipe submits research; an Action explicitly saves completed reports to Knowledge.
+- Open WebUI owns users, chats, attachments, Knowledge, model access, and embeddings.
+- Each run uses the initiating user's Open WebUI model catalog. The user selects the fast, smart,
+  and strategic roles before approval, and the selected IDs and Open WebUI-published limits are
+  frozen with the job.
+- A Pipe submits research; an Action explicitly saves a completed report to Knowledge.
 - GPT Researcher runs behind a durable gateway. Its MCP server is not the control plane.
-- There are two deployment modes: `local` and `k8s`. There is no mock research engine.
-- Local mode embeds dispatch in the API container and starts real runner subprocesses.
-- Kubernetes mode uses elected controller replicas and one `batch/v1 Job` per run.
-- PostgreSQL stores queue/state and provides controller election. Valkey is not required.
-- S3-compatible storage holds production artifacts. GPT Researcher never accesses the vector
-  database directly; private retrieval goes through Open WebUI.
-- Public search is optional. With it disabled, a run must select an attachment or Knowledge.
-- The gateway alone holds the Open WebUI integration account's admin API key. Runners receive only
-  a random per-job credential.
-- Function installation is an idempotent, targeted Open WebUI API sync. It does not delete or
-  replace unrelated Functions.
-- Dispatch uses expiring database leases and attempt-specific runner identities. The elected
-  controller reconciles missing or existing workloads after a crash.
-- Retention is enforced by a scheduled cleanup command for events, reports, jobs, and orphaned
-  artifact objects.
-- Runtime Jobs are owned by the controller Deployment; runner Pods are owned by their Job. Argo CD
-  therefore shows Deployment → Job → Pod in the application resource tree.
-- The gateway stays cluster-internal unless direct artifact downloads are enabled.
+- `local` mode embeds dispatch and starts real runner subprocesses; `k8s` mode uses elected
+  controllers and one literal `batch/v1 Job` per research run. There is no mock engine.
+- PostgreSQL stores queue/state and provides leader election. S3-compatible storage holds
+  production artifacts. Valkey and a project-specific vector database are not required.
+- SearXNG discovers public URLs and headless NoDriver/Chromium extracts selected pages. Public
+  search may be disabled when the job has an attachment or Knowledge source.
+- Public searches pass through the gateway for atomic per-job accounting. Untrusted snippets and
+  pages are bounded before they enter model prompts.
+- The gateway reserves a conservative input-token estimate before a model call, reconciles it with
+  provider-reported usage, and terminates impossible jobs with the actual budget reason.
+- Only the gateway holds the Open WebUI integration account API key. A runner receives a random,
+  scoped, per-job credential.
+- Function sync is targeted and idempotent. It does not replace unrelated Functions or interrupt
+  an already accepted run.
+- Reports are saved to Knowledge only when the user explicitly invokes the Action.
+- A chat is a research thread: later requests inherit its prior messages, files, Knowledge, and
+  reports. A new chat starts a new thread; natively referenced chats become read-only context.
+- Continuation reports deduplicate source identities and always expose a **Changes since previous
+  iteration** section.
+- Runtime Jobs are owned by the controller Deployment and runner Pods are owned by their Job, so
+  Argo CD displays Deployment → Job → Pod.
+- GPT Researcher is pinned to an exact source revision because the current PyPI `0.16.0` artifact
+  predates its importability fix.
 
 ## Architecture
 
@@ -41,59 +49,113 @@ flowchart LR
   K --> R["Runner"]
   R --> A
   R --> G["GPT Researcher"]
-  G -. "optional" .-> W["Public web"]
+  G --> Q["SearXNG"]
+  Q --> W["Public web"]
+  G -->|"headless NoDriver"| W
   G -->|"private sub-query"| A
   A -->|"frozen source IDs"| O
 ```
 
-The source manifest is frozen when a user approves the plan. GPT Researcher's generated
-sub-queries use the gateway-backed Open WebUI retriever, so attachments and Knowledge participate
-throughout research.
+The source manifest is frozen on submission. GPT Researcher's generated private sub-queries go
+through Open WebUI retrieval, so attachments and Knowledge participate throughout the run without
+coupling this service to Open WebUI's selected vector-store implementation.
 
-## Deployment modes
+The Pipe keeps Open WebUI's normal streamed completion open while the durable job runs, emitting
+application-level keepalives and UI status events. The final report therefore passes through Open
+WebUI's own completion persistence rather than relying on a public researcher URL or on an
+out-of-band rewrite of another user's message. The job itself remains durable if the browser
+disconnects; its event and artifact records are not tied to the browser connection.
 
-### Local
+## Local installation
 
-`MODE=local` runs API, queue dispatcher, and runner subprocesses in one researcher
-container. PostgreSQL, MinIO, and Open WebUI remain separate Compose services. This executes the
-real GPT Researcher package and is intended for development and integration tests.
+Prerequisites are Docker Compose and enough memory for Open WebUI plus one Chromium-backed runner.
 
-Runner subprocesses share the API container's resources and terminate if it restarts. No Docker
-socket is mounted and no sibling runner containers are created.
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
 
-### Kubernetes
+Open <http://localhost:3000>, create the first administrator and a dedicated integration account,
+then generate an API key for that account. Grant research users read access in Open WebUI to the
+underlying models they should be allowed to select. Put the key and suggested model IDs into `.env`:
 
-`config.mode=k8s` runs a separate two-replica controller Deployment. PostgreSQL session advisory
-locks elect one dispatcher. The leader checks the database backend PID before dispatch; connection
-loss releases leadership. Use a direct PostgreSQL connection or session-pooling proxy, not a
-transaction-pooling proxy.
+```dotenv
+OPENWEBUI_API_KEY=...
+DEFAULT_MODEL_PROFILES={"default":{"fast":"fast-model-id","smart":"report-model-id","strategic":"planning-model-id"}}
+REASONING_EFFORT=low
+PUBLIC_SEARCH_ENABLED=true
+RETRIEVER=searx
+SCRAPER=nodriver
+SEARX_URL=http://searxng:8080
+```
 
-Each run is an isolated Kubernetes Job with resource limits, deadline, scoped credential, and TTL.
-The Job owns its Pod and is owned by the stable controller Deployment. A normal controller rollout
-preserves the Deployment UID; deleting/recreating it garbage-collects active Jobs.
+The default profile only orders the suggested choices in the per-run model picker. It does not
+grant access or force a model. The gateway intersects the model IDs returned with the initiating
+user's authorization with metadata returned by Open WebUI to the integration account. This is
+necessary because Open WebUI can omit provider limits from the user-scoped response; it preserves
+the user's access boundary while keeping Open WebUI authoritative. The user chooses separate model
+IDs for GPT Researcher's `fast`, `smart` (report writing), and `strategic` (planning/analysis) roles
+for every run.
 
-Dispatch claims have a short PostgreSQL lease. Runner Job names include both the research ID and
-attempt number. If leadership changes before a runner starts, the next leader checks that exact
-workload, renews an existing dispatch, or requeues a missing dispatch with a fresh credential.
+When Open WebUI publishes `context_length` and `max_output_tokens`, those authoritative values are
+used automatically. A model with incomplete metadata remains selectable, but selecting it opens a
+required per-run form for the user to provide and confirm both limits. The pipe accepts whole token
+counts, requires a context window of at least 4,096 tokens, and rejects an output limit larger than
+the context window. Invalid values are prompted again and no job is submitted without valid limits.
+Users should verify manually entered limits against the actual provider deployment; the values are
+not inferred by the researcher.
 
-## Compatibility
+Both Open WebUI-provided and user-provided limits are frozen in the submitted job. This makes a
+running job reproducible even if Open WebUI metadata changes later. There is intentionally no
+administrator-side fallback map or duplicate model-window configuration in the researcher.
+For reasoning models, allow enough output budget for hidden reasoning tokens;
+models that spend their entire completion allowance on reasoning are unsuitable
+for report writing unless their output limit and reasoning settings are tuned.
+`REASONING_EFFORT` is optional; set it when a reasoning model is exposed under a
+custom OpenWebUI ID that GPT Researcher cannot classify by name.
 
-The `0.1.0` release line is pinned to GPT Researcher `0.16.0` and targets Open WebUI `v0.11.3`.
-These versions are the compatibility baseline for integration testing; upgrades must update the
-pin and pass the Compose and Kubernetes acceptance suites before release.
+Apply the configuration and import/update the two Open WebUI Functions:
+
+```bash
+docker compose up -d --build --force-recreate api
+docker compose run --rm function-sync
+```
+
+Open WebUI is on <http://localhost:3000>, the gateway API on
+<http://localhost:8090/docs>, SearXNG on <http://localhost:8081>, and the MinIO console on
+<http://localhost:9001>. The default stack performs real search, browsing, and model requests.
+
+To run private-only research, set `PUBLIC_SEARCH_ENABLED=false`, recreate `api`, rerun
+`function-sync`, and select at least one attachment or Knowledge source.
+
+### Optional Firecrawl experiment
+
+Firecrawl is retained only as a future comparison/integration overlay; it is not part of the
+default stack or production recommendation. It introduces its own PostgreSQL, Redis, Playwright,
+API, and worker processes. Run it explicitly with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.firecrawl.yaml up -d --build
+```
+
+The overlay deliberately has no RabbitMQ or extract worker. Revalidate its topology against the
+chosen Firecrawl revision before considering production use.
+
+After upgrading a checkout that previously ran Firecrawl by default, stop its old containers with
+`docker compose down --remove-orphans` before starting the new default stack. Named data volumes are
+retained unless `--volumes` is added.
 
 ## Kubernetes installation
 
 Prerequisites:
 
-- Open WebUI with `ENABLE_API_KEYS=true`;
-- a dedicated admin/integration account and its API key;
-- PostgreSQL and an S3-compatible bucket;
+- Open WebUI with `ENABLE_API_KEYS=true` and a dedicated integration account API key;
+- Open WebUI read access for each research user or group to the underlying models they may select;
+- PostgreSQL, an S3-compatible bucket, and cluster-internal SearXNG with JSON results enabled;
 - a published image from this repository; and
-- network access from the research namespace to Open WebUI, PostgreSQL, object storage, and the
-  chosen model/search providers.
+- allowed network paths between the research namespace and those services.
 
-Provide a Secret with these keys:
+Provide a Secret through the deployment environment's secret-management mechanism:
 
 ```yaml
 apiVersion: v1
@@ -111,181 +173,107 @@ stringData:
   s3-secret-access-key: "..."
 ```
 
-Install:
+Install the chart:
 
 ```bash
 helm upgrade --install research ./chart/open-webui-gpt-researcher \
   --namespace research --create-namespace \
   --set image.repository=ghcr.io/OWNER/open-webui-gpt-researcher \
   --set image.tag=0.1.0 \
-  --set config.openwebuiUrl='http://open-webui.open-webui.svc.cluster.local:8080' \
-  --set config.s3EndpointUrl='https://s3.example.com' \
-  --set config.s3Bucket='research-artifacts' \
+  --set env.OPENWEBUI_URL='http://open-webui.open-webui.svc.cluster.local:8080' \
+  --set env.SEARX_URL='http://searxng.searxng.svc.cluster.local:8080' \
+  --set env.S3_ENDPOINT_URL='https://s3.example.com' \
+  --set env.S3_BUCKET='research-artifacts' \
   --set secrets.existingSecret=research-secrets
 ```
 
-### Published chart and Argo CD
+The chart runs schema migration, deploys API/controllers, and runs an idempotent Function sync Job.
+PostgreSQL session advisory locks elect one controller; use a direct or session-pooled database
+connection, not a transaction-pooling proxy. Runner Jobs use a non-root, read-only security context,
+resource limits, deadline, scoped token, and TTL. The image contains Chromium for NoDriver.
 
-The release workflow publishes both artifacts on a `v*` tag:
+SearXNG itself is intentionally outside this chart. Keep its Service cluster-internal and set
+`env.SEARX_URL`. The gateway, not runner Pods, calls SearXNG. No PostgreSQL extension is required
+for this project's schema.
 
-- image: `ghcr.io/OWNER/open-webui-gpt-researcher:VERSION`;
-- Helm chart: `oci://ghcr.io/OWNER/charts/open-webui-gpt-researcher:VERSION`.
+### OCI chart and Argo CD
 
-The tag without its `v` prefix, the chart `version`, and `appVersion` must match. For example,
-`v0.1.0` publishes version `0.1.0`. A manual workflow run publishes the versions currently in
-`Chart.yaml`.
+A `v*` release tag publishes:
 
-An Argo CD Application can consume the OCI chart directly. In Helm repository syntax, `repoURL`
-does not include the `oci://` prefix:
+- `ghcr.io/OWNER/open-webui-gpt-researcher:VERSION`;
+- `oci://ghcr.io/OWNER/charts/open-webui-gpt-researcher:VERSION`.
+
+Example Argo CD source:
 
 ```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: open-webui-gpt-researcher
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: ghcr.io/OWNER/charts
-    chart: open-webui-gpt-researcher
-    targetRevision: 0.1.0
-    helm:
-      valuesObject:
-        image:
-          repository: ghcr.io/OWNER/open-webui-gpt-researcher
-          tag: 0.1.0
-        imagePullSecrets:
-          - name: ghcr-pull
-        config:
-          openwebuiUrl: http://open-webui.open-webui.svc.cluster.local:8080
-          s3EndpointUrl: https://s3.example.com
-          s3Bucket: research-artifacts
-        secrets:
-          existingSecret: research-secrets
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: research
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
+source:
+  repoURL: ghcr.io/OWNER/charts
+  chart: open-webui-gpt-researcher
+  targetRevision: 0.1.0
+  helm:
+    valuesObject:
+      image:
+        repository: ghcr.io/OWNER/open-webui-gpt-researcher
+        tag: 0.1.0
+      env:
+        OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
+        SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
+        S3_ENDPOINT_URL: https://s3.example.com
+        S3_BUCKET: research-artifacts
+      secrets:
+        existingSecret: research-secrets
 ```
 
-GHCR packages are private on first publication. Either make both packages public, or configure two
-independent credentials:
+For private GHCR packages, configure an OCI Helm repository credential in the Argo CD namespace
+and a separate image-pull Secret in the research namespace. Public packages need neither.
 
-1. Give Argo CD access to the chart with a repository Secret in the Argo CD namespace. Set
-   `type: helm`, `enableOCI: "true"`, `url: ghcr.io/OWNER/charts`, and inject a username plus a token
-   with `read:packages` as `password`.
-2. Create `ghcr-pull` as a `kubernetes.io/dockerconfigjson` Secret in the `research` namespace so
-   Kubernetes can pull the private application and runner image. Argo CD's repository credential is
-   not an image pull credential.
+## Open WebUI integration
 
-Manage both Secrets through the deployment environment's secret-management mechanism; do not
-commit their values. Public GHCR packages support anonymous pulls, so neither credential is needed
-when both artifacts are public, and `imagePullSecrets` can be omitted.
+Function sync manages only `deep_research`, its model metadata, and the
+`save_deep_research_to_knowledge` action using Open WebUI APIs. It associates the action only with
+the Deep Research model. Existing user Valves, unrelated Functions, and unrelated model actions are
+preserved. If API-key route restrictions are enabled, allow Function and model management plus the
+chat-completion, embedding, retrieval, chat-event, file, and Knowledge routes used by the
+integration.
 
-The chart runs its schema migration, deploys API/controllers, and then runs a post-install or
-post-upgrade Function sync Job. The sync uses these targeted endpoints:
+The research gateway remains cluster-internal. Completed artifacts stay in the configured artifact
+store until the user selects **Attach research files**. The action downloads them over the private
+network and uploads them to Open WebUI with the current user's authorization, so Open WebUI renders
+native file cards and enforces normal ownership. **Save report to Knowledge** is a separate explicit
+action and creates or updates Knowledge as the current user. No public researcher ingress is
+required for either operation. `env.ARTIFACT_BASE_URL` is retained only for direct API clients that
+explicitly want signed artifact URLs; chat rendering does not use those URLs.
 
-- `GET /api/v1/functions/export`;
-- `POST /api/v1/functions/create` or `/id/{id}/update`;
-- `POST /api/v1/functions/id/{id}/valves/update`; and
-- `POST /api/v1/functions/id/{id}/toggle` when activation is required.
+### Iterative and linked-chat research
 
-It manages only `deep_research` and `save_deep_research_to_knowledge`. Re-importing code does not
-interrupt an accepted job: the Pipe is no longer involved after submission. Existing Open WebUI
-user Valves and unrelated Functions are preserved. Future Pipe/Action invocations load the new
-code. Keep Function changes backward-compatible with existing report markers and Valve data.
+- Submit another Deep Research request in the same chat to create the next numbered iteration.
+  The latest successful job is recorded as its parent.
+- Start a new chat to start an independent research thread.
+- Use Open WebUI's **More → Reference Chats** picker to link another chat. The Pipe reads only
+  references the current user can access and snapshots their active message branches.
+- Current-chat and directly linked-chat messages, attachments, and Knowledge selections are
+  included. Linked chats are not followed recursively, preventing accidental context expansion.
+- Conversation context is deterministically bounded by the Pipe's `context_char_limit` Valve.
+- Reports and source records are deduplicated per run. Saving any report to Knowledge remains an
+  explicit user action.
 
-If API-key endpoint restrictions are enabled, allow the Function endpoints above plus the gateway's
-chat-completion, embedding, retrieval, chat-event, file, and Knowledge routes.
-
-The chart's NetworkPolicy permits research-namespace callers. Add the Open WebUI and ingress
-controller namespace/pod selectors through `networkPolicy.additionalIngress` when they run in
-other namespaces.
-
-Search/provider credentials used only by runners belong in the Secret named by
-`config.runner.extraEnvSecret`; never put the Open WebUI API key there.
-
-`DATABASE_URL` is always read from a Secret. By default the chart uses the `database-url` key in
-`secrets.existingSecret`. Set `database.existingSecret` and `database.secretKey` to use a separate
-injected database Secret.
-
-## Local installation
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-Open <http://localhost:3000>, create the first administrator and a dedicated integration account,
-then generate its API key. Configure `.env`:
-
-```dotenv
-OPENWEBUI_API_KEY=...
-MODEL_PROFILES={"default":"model-id-visible-in-openwebui"}
-PUBLIC_SEARCH_ENABLED=true
-RETRIEVER=tavily
-TAVILY_API_KEY=...
-```
-
-Apply the credentials and import/update the Functions:
-
-```bash
-docker compose up -d --build --force-recreate api
-docker compose run --rm function-sync
-```
-
-The Pipe and Action are activated automatically. Open WebUI is at <http://localhost:3000>, the
-gateway API at <http://localhost:8090/docs>, and MinIO Console at <http://localhost:9001>.
-
-For private-only research:
-
-```dotenv
-PUBLIC_SEARCH_ENABLED=false
-TAVILY_API_KEY=
-```
-
-Recreate `api`, rerun `function-sync`, and select an attachment or Knowledge when submitting.
-Tavily is only GPT Researcher's default public retriever; another supported retriever can be
-selected with `RETRIEVER`.
-
-## Downloads and Knowledge
-
-`config.artifactBaseUrl` is only the browser-facing base for signed artifact links. Leave it empty
-and keep ingress disabled for chat reports without direct downloads. To offer downloads, expose the
-artifact route through a user-reachable private or public proxy and set the base URL.
-
-Reports are never added to Knowledge automatically. The user invokes Save Deep Research to
-Knowledge, then chooses a new collection or an existing writable collection.
+Because the native completion stays open, proxies in front of Open WebUI must permit streaming
+responses for at least the configured research wall-time. The Pipe emits an empty structured
+completion chunk every `job_poll_interval_seconds` (five seconds by default) to keep ordinary idle
+timeouts from firing.
 
 ## Budgets and recovery
 
-Administrator Function defaults and service hard caps bound input tokens, output tokens, searches,
-and wall time. Users can refine per-run values; the gateway validates them. With the default Open
-WebUI model route, the gateway accounts provider-reported tokens and clamps subsequent calls.
+Users refine input-token, output-token, search, and wall-time budgets through Function Valves;
+administrator hard caps validate those values at submission. Input estimation is intentionally
+model-agnostic and conservative because Open WebUI may route many tokenizer families. Actual
+accounting uses the provider's reported usage.
 
-Job state and ordered events are durable in PostgreSQL. API replicas are stateless. Controller
-leadership and dispatch recovery survive pod loss through PostgreSQL advisory locks and expiring
-dispatch leases.
-
-The cleanup CronJob runs hourly by default. It removes terminal-job events after 30 days, artifacts
-after 90 days, and terminal jobs after 90 days. It also deletes unreferenced objects under `jobs/`
-after a 24-hour safety window. Configure `config.eventRetentionDays`,
-`config.artifactRetentionDays`, `config.jobRetentionDays`, `config.orphanGraceSeconds`, and
-`config.cleanupBatchSize`; job retention cannot be shorter than artifact retention. For local
-maintenance, run `docker compose run --rm cleanup`.
-
-Runtime settings use direct uppercase field names without an application prefix: for example,
-`DATABASE_URL`, `OPENWEBUI_URL`, `PUBLIC_SEARCH_ENABLED`, `MODEL_PROFILES`, `JOB_ID`, and
-`RUNNER_TOKEN`.
-
-Runtime Jobs deliberately do not copy Argo CD's tracking annotation: they are dependent live
-resources, not Git-desired manifests.
+State and ordered events are durable in PostgreSQL. Expiring dispatch leases recover controller
+crashes. Scheduled cleanup removes expired events, artifacts, jobs, and orphaned objects. Runtime
+settings use direct uppercase names such as `DATABASE_URL`, `DEFAULT_MODEL_PROFILES`, `SEARX_URL`,
+`JOB_ID`, and `RUNNER_TOKEN`. The Helm chart exposes these non-secret settings directly under
+`env:`; credentials remain Kubernetes Secret references.
 
 ## Development
 
@@ -298,7 +286,7 @@ make build
 make helm-lint
 ```
 
-Tests replace external boundaries with fakes; production contains only the GPT Researcher engine.
+Tests fake external boundaries only; production has no mock research engine.
 
 ## Decision evidence
 
@@ -306,12 +294,13 @@ Tests replace external boundaries with fakes; production contains only the GPT R
 - [Open WebUI API keys](https://docs.openwebui.com/features/authentication-access/api-keys/)
 - [Open WebUI Function API implementation](https://github.com/open-webui/open-webui/blob/main/backend/open_webui/routers/functions.py)
 - [GPT Researcher configuration](https://docs.gptr.dev/docs/gpt-researcher/gptr/config)
+- [GPT Researcher import fix in the pinned revision](https://github.com/assafelovic/gpt-researcher/commit/bea0ad07c3ead12517c79e03789da49a270fd249)
+- [SearXNG search API](https://docs.searxng.org/dev/search_api.html)
+- [NoDriver implementation used by pinned GPT Researcher](https://github.com/assafelovic/gpt-researcher/blob/master/gpt_researcher/scraper/browser/nodriver_scraper.py)
 - [Helm OCI registries](https://helm.sh/docs/topics/registries/)
-- [Argo CD declarative Helm/OCI repositories](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#helm)
-- [GitHub Container Registry authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+- [Argo CD Helm/OCI repositories](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#helm)
 - [PostgreSQL advisory locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)
 - [Argo CD resource tracking](https://argo-cd.readthedocs.io/en/stable/user-guide/resource_tracking/)
-- [Argo CD Resources view](https://argo-cd.readthedocs.io/en/stable/user-guide/resources-view/)
 
 ## License
 
