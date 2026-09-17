@@ -4,9 +4,24 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
+from open_webui_gpt_researcher import function_sync
 from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.function_sync import FunctionSync
+
+
+def test_function_source_uses_the_application_release_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(function_sync, "__version__", "26.9.0-a.1")
+
+    rendered = function_sync.render_function_source(
+        '"""\ntitle: Deep Research\nversion: 0.0.0-dev\n"""\n'
+    )
+
+    assert "version: 26.9.0-a.1" in rendered
+    assert "0.0.0-dev" not in rendered
 
 
 async def test_function_sync_creates_updates_valves_and_activates(tmp_path: Path) -> None:

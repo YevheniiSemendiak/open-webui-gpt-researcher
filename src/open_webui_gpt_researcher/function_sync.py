@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 import structlog
 
+from . import __version__
 from .config import Settings
 
 log = structlog.get_logger()
+FUNCTION_VERSION_LINE = re.compile(r"^version:.*$", re.MULTILINE)
+
+
+def render_function_source(content: str) -> str:
+    return FUNCTION_VERSION_LINE.sub(lambda _: f"version: {__version__}", content, count=1)
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,7 @@ class FunctionSync:
         changed: list[str] = []
         for source in FUNCTION_SOURCES:
             content = (Path(self.settings.function_sources_path) / source.filename).read_text()
+            content = render_function_source(content)
             form: dict[str, object] = {
                 "id": source.id,
                 "name": source.name,

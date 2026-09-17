@@ -228,13 +228,18 @@ A `v*` release tag publishes:
 - `ghcr.io/yevheniisemendiak/open-webui-gpt-researcher:VERSION`
 - `oci://ghcr.io/yevheniisemendiak/charts/open-webui-gpt-researcher:VERSION`
 
+The exact tag version is used for the chart version, chart `appVersion`, and application image.
+Because the default `api.image.tag` and `researchJob.image.tag` are empty, both components inherit
+that immutable `appVersion`; operators only need to override them when intentionally deploying a
+different image.
+
 Example Argo CD source:
 
 ```yaml
 source:
   repoURL: ghcr.io/yevheniisemendiak/charts
   chart: open-webui-gpt-researcher
-  targetRevision: 0.1.0
+  targetRevision: 26.9.0-a.1
   helm:
     valuesObject:
       api:

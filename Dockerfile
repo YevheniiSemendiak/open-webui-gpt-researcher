@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.7
+ARG VERSION=0.0.0.dev0
+
 FROM python:3.12-slim-bookworm AS builder
 RUN pip install --no-cache-dir uv==0.11.7
 WORKDIR /app
@@ -8,7 +10,11 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-ins
 
 COPY README.md ./
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable
+ARG VERSION
+RUN --mount=type=cache,target=/root/.cache/uv \
+    sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml \
+    && sed -i "/name = \"open-webui-gpt-researcher\"/{n;s/^version = \".*\"/version = \"${VERSION}\"/;}" uv.lock \
+    && uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim-bookworm AS runtime
 RUN apt-get update \
@@ -23,7 +29,11 @@ COPY --from=builder --chown=research:research /app/.venv /app/.venv
 COPY --chown=research:research alembic.ini ./
 COPY --chown=research:research migrations ./migrations
 COPY --chown=research:research openwebui_functions ./openwebui_functions
-ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ARG VERSION
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    VERSION="${VERSION}"
 USER 10001:10001
 EXPOSE 8090
 ENTRYPOINT ["open-webui-gpt-researcher"]

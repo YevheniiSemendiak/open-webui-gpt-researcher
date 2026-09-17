@@ -22,6 +22,14 @@ make build
 make helm-lint
 ```
 
+CI keeps the component checks in the reusable `.github/workflows/tests.yaml` workflow. Its final
+`Check` job waits for every required job and fails unless all of them succeeded. The main
+`.github/workflows/ci.yml` workflow calls it for pushes and pull requests; after it succeeds,
+Dependabot pull requests are approved and configured for squash auto-merge.
+
+Repository settings must allow GitHub Actions to approve pull requests and auto-merge must be
+enabled for the Dependabot automation to complete.
+
 Tests fake external boundaries only. Production code does not include a mock research engine.
 
 ## Repository layout
@@ -151,7 +159,33 @@ When Kubernetes schemas are available, also validate rendered resources with `ku
   changing application source.
 - GPT Researcher is pinned to an exact source revision; review upstream changes before advancing
   it.
-- Release tags publish the application image and OCI Helm chart through the GitHub workflow.
+
+## Releases
+
+The Git tag is the sole release-version authority. Do not edit package metadata, the Helm chart,
+or image tags before a release. Their checked-in `0.0.0.dev0` and `0.0.0-dev` values are deliberate
+development placeholders.
+
+Push a tag on the commit to release:
+
+```bash
+git tag -s v26.9.0-a.1
+git push origin v26.9.0-a.1
+```
+
+Accepted tags are `vMAJOR.MINOR.PATCH` and the prerelease forms `vMAJOR.MINOR.PATCH-a.N`,
+`-b.N`, and `-rc.N`. The workflow validates the tag once and derives all published metadata from
+it:
+
+- the application image receives the exact version tag;
+- the OCI chart receives the exact version as both chart version and `appVersion`;
+- the Python distribution metadata receives the equivalent PEP 440 version;
+- the API and synchronized Open WebUI Functions expose the exact release version.
+
+Stable releases additionally update the `MAJOR.MINOR` and `latest` image tags. Prereleases never
+update floating tags. The tagged commit must already contain the publishing workflow, so fix a
+failed workflow on a new commit and tag that commit; do not expect an existing tag to use workflow
+changes made afterward.
 
 ## Documentation ownership
 
