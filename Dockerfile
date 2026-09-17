@@ -30,6 +30,8 @@ COPY --chown=research:research alembic.ini ./
 COPY --chown=research:research migrations ./migrations
 COPY --chown=research:research openwebui_functions ./openwebui_functions
 ARG VERSION
+LABEL org.opencontainers.image.source="https://github.com/yevheniisemendiak/open-webui-gpt-researcher" \
+      org.opencontainers.image.version="${VERSION}"
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

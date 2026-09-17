@@ -177,7 +177,7 @@ Accepted tags are `vMAJOR.MINOR.PATCH` and the prerelease forms `vMAJOR.MINOR.PA
 `-b.N`, and `-rc.N`. The workflow validates the tag once and derives all published metadata from
 it:
 
-- the application image receives the exact version tag;
+- the application and optional OpenVPN proxy images receive the exact version tag;
 - the OCI chart receives the exact version as both chart version and `appVersion`;
 - the Python distribution metadata receives the equivalent PEP 440 version;
 - the API and synchronized Open WebUI Functions expose the exact release version.
