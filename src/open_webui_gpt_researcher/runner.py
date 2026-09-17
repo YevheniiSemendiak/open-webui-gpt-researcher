@@ -48,14 +48,6 @@ class RunnerClient:
         )
         response.raise_for_status()
 
-    async def retrieve_private_context(self, query: str) -> list[dict[str, object]]:
-        response = await self.client.post(
-            f"/internal/jobs/{self.job_id}/search", json={"query": query}
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, list) else []
-
     async def state(self) -> JobState:
         response = await self.client.get(f"/internal/jobs/{self.job_id}/state")
         response.raise_for_status()
@@ -111,8 +103,6 @@ class Runner:
             }
             for document in spec.context_documents
         ]
-        if spec.sources:
-            private_context.extend(await self.client.retrieve_private_context(spec.query))
         research_task = asyncio.create_task(
             self.engine.run(spec, private_context=private_context, progress=self._report_progress)
         )
@@ -204,19 +194,8 @@ class Runner:
                 "DEEP_RESEARCH_BREADTH": str(spec.research.breadth),
                 "DEEP_RESEARCH_DEPTH": str(spec.research.depth),
                 "MAX_ITERATIONS": str(spec.research.queries_per_branch),
-                "FAST_TOKEN_LIMIT": str(min(6_000, spec.budget.max_output_tokens)),
-                "SMART_TOKEN_LIMIT": str(min(12_000, spec.budget.max_output_tokens)),
-                "STRATEGIC_TOKEN_LIMIT": str(min(8_000, spec.budget.max_output_tokens)),
-                "MAX_SCRAPED_SOURCE_CHARS": str(
-                    min(20_000, max(4_000, spec.budget.max_input_tokens // 10))
-                ),
-                "MAX_SCRAPED_BATCH_CHARS": str(
-                    min(80_000, max(16_000, spec.budget.max_input_tokens))
-                ),
             }
         )
-        if self.settings.model_route != "openwebui":
-            return
         models = spec.models
         endpoint = (
             f"{self.settings.internal_base_url.rstrip('/')}/internal/jobs/{spec.id}/openai/v1"

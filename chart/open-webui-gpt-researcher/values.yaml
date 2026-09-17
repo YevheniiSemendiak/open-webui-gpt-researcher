@@ -34,14 +34,11 @@ api:
     SCRAPER: nodriver
     SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
     CRAWLER_PROXY_URL: ""
-    MODEL_ROUTE: openwebui
     DEFAULT_MODEL_PROFILES: '{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}'
     DEFAULT_RESEARCH_STRATEGY: balanced
     MODEL_CONTEXT_SAFETY_TOKENS: 256
     REASONING_EFFORT: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
-    HARD_MAX_INPUT_TOKENS: 300000
-    HARD_MAX_OUTPUT_TOKENS: 64000
     HARD_MAX_QUERIES: 100
     HARD_MAX_WALL_TIME_SECONDS: 7200
     MAX_CONCURRENT_JOBS: 5
@@ -101,7 +98,6 @@ researchJob:
     RETRIEVER: searx
     SCRAPER: nodriver
     CRAWLER_PROXY_URL: ""
-    MODEL_ROUTE: openwebui
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
     RUNNER_HEARTBEAT_SECONDS: 10
     RUNNER_CANCEL_POLL_SECONDS: 1

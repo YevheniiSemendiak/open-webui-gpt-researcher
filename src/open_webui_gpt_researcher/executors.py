@@ -47,6 +47,10 @@ class LocalProcessExecutor:
         for secret_name in (
             "DATABASE_URL",
             "OPENWEBUI_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
             "S3_ACCESS_KEY_ID",
             "S3_SECRET_ACCESS_KEY",
             "SERVICE_TOKEN",

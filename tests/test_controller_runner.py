@@ -170,7 +170,18 @@ async def test_controller_renews_existing_expired_dispatch(tmp_path: Path) -> No
     await database.close()
 
 
-async def test_controller_finishes_cancelled_missing_dispatch(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("dispatch_status", "expected_stops"),
+    [
+        (DispatchStatus.MISSING, []),
+        (DispatchStatus.ACTIVE, [1]),
+    ],
+)
+async def test_controller_finishes_cancelled_dispatch(
+    tmp_path: Path,
+    dispatch_status: DispatchStatus,
+    expected_stops: list[int],
+) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cancel-reconcile.sqlite'}")
     await database.create_all()
     repository = JobRepository()
@@ -192,11 +203,12 @@ async def test_controller_finishes_cancelled_missing_dispatch(tmp_path: Path) ->
         await repository.request_cancel(session, job_id=UUID(job.id), user_id="u")
         job.dispatch_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
+    executor = RecordingExecutor(status=dispatch_status)
     controller = Controller(
         settings=Settings(database_url="sqlite+aiosqlite://"),
         database=database,
         repository=repository,
-        executor=RecordingExecutor(status=DispatchStatus.MISSING),
+        executor=executor,
     )
     assert await controller.reconcile_expired_dispatches() == 1
     async with database.session() as session:
@@ -204,6 +216,7 @@ async def test_controller_finishes_cancelled_missing_dispatch(tmp_path: Path) ->
         assert stored is not None
         assert stored.state == JobState.CANCELLED.value
         assert stored.finished_at is not None
+    assert [attempt for _, attempt in executor.stops] == expected_stops
     await database.close()
 
 
@@ -396,9 +409,6 @@ class FakeRunnerClient:
     async def heartbeat(self) -> None:
         self.heartbeats += 1
 
-    async def retrieve_private_context(self, query: str) -> list[dict[str, object]]:
-        return [{"text": query}]
-
     async def state(self) -> JobState:
         await asyncio.sleep(0)
         return self.current_state
@@ -434,7 +444,7 @@ class SlowEngine:
         raise AssertionError("unreachable")
 
 
-async def test_runner_completes_and_configures_budgets(monkeypatch: Any) -> None:
+async def test_runner_completes_and_configures_research_shape(monkeypatch: Any) -> None:
     client = FakeRunnerClient()
     settings = Settings(default_model_profiles={"default": "model"}, runner_cancel_poll_seconds=0.5)
     monkeypatch.setenv("INTERNAL_BASE_URL", "http://api")
@@ -450,8 +460,7 @@ async def test_runner_completes_and_configures_budgets(monkeypatch: Any) -> None
                 "name": "Current chat",
                 "kind": "conversation",
             },
-        },
-        {"text": "Test runner"},
+        }
     ]
     assert client.events[0] == (
         "research.progress",
@@ -465,6 +474,10 @@ async def test_runner_completes_and_configures_budgets(monkeypatch: Any) -> None
     assert os.environ["DEEP_RESEARCH_BREADTH"] == "2"
     assert os.environ["DEEP_RESEARCH_DEPTH"] == "2"
     assert os.environ["MAX_ITERATIONS"] == "2"
+    assert os.environ["FAST_LLM"] == "openai:test-model"
+    assert os.environ["SMART_LLM"] == "openai:test-model"
+    assert os.environ["STRATEGIC_LLM"] == "openai:test-model"
+    assert os.environ["OPENAI_API_KEY"] == client.token
 
 
 async def test_runner_honors_cancel_request() -> None:

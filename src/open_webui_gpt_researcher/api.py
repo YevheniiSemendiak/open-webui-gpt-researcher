@@ -6,7 +6,7 @@ import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import structlog
@@ -415,31 +415,36 @@ def create_app(
         job_id: UUID, body: SearchBody, runner_token: RunnerToken
     ) -> list[dict[str, object]]:
         try:
-            budget_failure: ResearchJob | None = None
             async with database.session() as session, session.begin():
                 job = await repository.get_for_runner_locked(
                     session, job_id=job_id, runner_token=runner_token
                 )
                 _ensure_active(job)
-                current_searches = int((job.usage or {}).get("searches", 0))
-                maximum = int(job.budget["max_queries"])
-                if current_searches >= maximum:
-                    budget_failure = await repository.mark_failed(
-                        session,
-                        job_id=job_id,
-                        runner_token=runner_token,
-                        error="query budget exhausted",
-                    )
-                else:
-                    await repository.consume_usage(
-                        session, job_id=job_id, runner_token=runner_token, searches=1
-                    )
-                sources = to_runner_spec(job).sources
-            if budget_failure is not None:
-                await _publish_failure(openwebui, budget_failure, "query budget exhausted")
-                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "query budget exhausted")
-            passages = await openwebui.retrieve(query=body.query, sources=sources)
-            return [{"text": passage.text, "metadata": passage.metadata} for passage in passages]
+                await repository.consume_usage(
+                    session, job_id=job_id, runner_token=runner_token, private_searches=1
+                )
+                spec = to_runner_spec(job)
+            passages = (
+                await openwebui.retrieve(query=body.query, sources=spec.sources)
+                if spec.sources
+                else []
+            )
+            results: list[dict[str, object]] = [
+                {"text": passage.text, "metadata": passage.metadata} for passage in passages
+            ]
+            results.extend(
+                {
+                    "text": document.text,
+                    "metadata": {
+                        "source": f"openwebui-chat:{document.chat_id}",
+                        "file_id": document.id,
+                        "name": document.title or document.id,
+                        "kind": document.kind,
+                    },
+                }
+                for document in spec.context_documents
+            )
+            return results
         except JobNotFoundError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
         except OpenWebUIError as error:
@@ -450,7 +455,7 @@ def create_app(
         job_id: UUID, body: PublicSearchBody, runner_token: RunnerToken
     ) -> list[dict[str, str]]:
         try:
-            budget_failure: ResearchJob | None = None
+            limit_failure: ResearchJob | None = None
             async with database.session() as session, session.begin():
                 job = await repository.get_for_runner_locked(
                     session, job_id=job_id, runner_token=runner_token
@@ -460,19 +465,20 @@ def create_app(
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "public search is disabled")
                 current = int((job.usage or {}).get("searches", 0))
                 if current >= int(job.budget["max_queries"]):
-                    budget_failure = await repository.mark_failed(
+                    limit_failure = await repository.mark_failed(
                         session,
                         job_id=job_id,
                         runner_token=runner_token,
-                        error="query budget exhausted",
+                        error="public search query limit exhausted",
                     )
                 else:
                     await repository.consume_usage(
                         session, job_id=job_id, runner_token=runner_token, searches=1
                     )
-            if budget_failure is not None:
-                await _publish_failure(openwebui, budget_failure, "query budget exhausted")
-                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "query budget exhausted")
+            if limit_failure is not None:
+                message = "public search query limit exhausted"
+                await _publish_failure(openwebui, limit_failure, message)
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, message)
             return await public_search.search(
                 query=body.query,
                 max_results=body.max_results,
@@ -503,29 +509,33 @@ def create_app(
             ),
         }
         try:
+            async with database.session() as session, session.begin():
+                job = await repository.get_for_runner_locked(
+                    session, job_id=job_id, runner_token=runner_token
+                )
+                if job.state != JobState.RUNNING.value:
+                    raise InvalidStateError(f"cannot complete job in state {job.state}")
+                attempt = job.attempt
+
+            upload_id = uuid4()
             stored = {}
             for name, (content, media_type) in artifacts.items():
                 stored[name] = await artifact_store.put(
-                    f"jobs/{job_id}/{name}", content, media_type
+                    f"jobs/{job_id}/attempts/{attempt}/{upload_id}/{name}",
+                    content,
+                    media_type,
                 )
             async with database.session() as session, session.begin():
-                job = await repository.get_for_runner(
+                job = await repository.get_for_runner_locked(
                     session, job_id=job_id, runner_token=runner_token
                 )
+                if job.state != JobState.RUNNING.value:
+                    raise InvalidStateError(f"cannot complete job in state {job.state}")
                 links = {
                     name: url
                     for name in stored
                     if (url := _download_url(settings, job, name)) is not None
                 }
-                for name, item in stored.items():
-                    await repository.add_artifact(
-                        session,
-                        job_id=job_id,
-                        name=name,
-                        object_key=item.object_key,
-                        media_type=artifacts[name][1],
-                        size=item.size,
-                    )
                 result: dict[str, object] = {
                     "artifacts": links,
                     "source_count": len(completion.sources),
@@ -537,6 +547,15 @@ def create_app(
                     completion=completion,
                     result=result,
                 )
+                for name, item in stored.items():
+                    await repository.add_artifact(
+                        session,
+                        job_id=job_id,
+                        name=name,
+                        object_key=item.object_key,
+                        media_type=artifacts[name][1],
+                        size=item.size,
+                    )
             if job.state == JobState.SUCCEEDED.value:
                 await _publish_completion(openwebui, job, completion.report_markdown)
             return {"state": job.state}
@@ -577,8 +596,8 @@ def create_app(
         job_id: UUID, payload: dict[str, Any], runner_token: RunnerToken
     ) -> Response:
         estimated_input = _estimate_input_tokens(payload)
-        budget_error: str | None = None
-        budget_failure: ResearchJob | None = None
+        context_error: str | None = None
+        context_failure: ResearchJob | None = None
         async with database.session() as session, session.begin():
             job = await repository.get_for_runner_locked(
                 session, job_id=job_id, runner_token=runner_token
@@ -591,13 +610,6 @@ def create_app(
                     ModelCapability.model_validate(item) for item in job.model_capabilities
                 )
             }
-            usage = job.usage or {}
-            remaining_input = int(job.budget["max_input_tokens"]) - int(
-                usage.get("input_tokens", 0)
-            )
-            remaining_output = int(job.budget["max_output_tokens"]) - int(
-                usage.get("output_tokens", 0)
-            )
             requested_model = str(payload.get("model") or model_roles.smart)
             capability = capabilities.get(requested_model)
             if capability is None:
@@ -608,41 +620,25 @@ def create_app(
             model_output_capacity = (
                 capability.context_length - estimated_input - settings.model_context_safety_tokens
             )
-            if estimated_input > remaining_input:
-                budget_error = (
-                    "input token budget exhausted: request needs approximately "
-                    f"{estimated_input} tokens, {remaining_input} remain"
-                )
-            elif remaining_output <= 0:
-                budget_error = "output token budget exhausted"
-            elif model_output_capacity <= 0:
-                budget_error = (
+            if model_output_capacity <= 0:
+                context_error = (
                     f"model context exhausted: request needs approximately {estimated_input} "
                     f"input tokens but {requested_model} has a "
                     f"{capability.context_length} token context window"
                 )
-            if budget_error is not None:
-                budget_failure = await repository.mark_failed(
+                context_failure = await repository.mark_failed(
                     session,
                     job_id=job_id,
                     runner_token=runner_token,
-                    error=budget_error,
+                    error=context_error,
                 )
-            else:
-                await repository.consume_usage(
-                    session,
-                    job_id=job_id,
-                    runner_token=runner_token,
-                    input_tokens=estimated_input,
-                )
-        if budget_error is not None and budget_failure is not None:
-            await _publish_failure(openwebui, budget_failure, budget_error)
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, budget_error)
+        if context_error is not None and context_failure is not None:
+            await _publish_failure(openwebui, context_failure, context_error)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, context_error)
         request_payload = dict(payload)
         if settings.reasoning_effort is not None:
             request_payload["reasoning_effort"] = settings.reasoning_effort
         output_limit = min(
-            remaining_output,
             model_output_capacity,
             capability.max_output_tokens,
         )
@@ -665,44 +661,28 @@ def create_app(
                 default_model=model_roles.smart,
             )
         except OpenWebUIError as error:
-            async with database.session() as session, session.begin():
-                await repository.consume_usage(
-                    session,
-                    job_id=job_id,
-                    runner_token=runner_token,
-                    input_tokens=-estimated_input,
-                )
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
         data = response.json()
         provider_usage = data.get("usage", {}) if isinstance(data, dict) else {}
-        input_tokens = int(
-            provider_usage.get("prompt_tokens", provider_usage.get("input_tokens", 0))
+        provider_usage = provider_usage if isinstance(provider_usage, dict) else {}
+        reported_input = provider_usage.get("prompt_tokens", provider_usage.get("input_tokens"))
+        reported_output = provider_usage.get(
+            "completion_tokens", provider_usage.get("output_tokens")
         )
-        output_tokens = int(
-            provider_usage.get("completion_tokens", provider_usage.get("output_tokens", 0))
+        input_tokens = int(reported_input) if reported_input is not None else estimated_input
+        output_tokens = (
+            int(reported_output) if reported_output is not None else _estimate_output_tokens(data)
         )
+        estimated_usage = reported_input is None or reported_output is None
         async with database.session() as session, session.begin():
-            totals = await repository.consume_usage(
+            await repository.consume_usage(
                 session,
                 job_id=job_id,
                 runner_token=runner_token,
-                input_tokens=input_tokens - estimated_input,
+                input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                estimated_token_calls=int(estimated_usage),
             )
-        if totals["input_tokens"] > int(job.budget["max_input_tokens"]) or totals[
-            "output_tokens"
-        ] > int(job.budget["max_output_tokens"]):
-            budget_message = "model usage exceeded the job token budget"
-            async with database.session() as session, session.begin():
-                failed_job = await repository.mark_failed(
-                    session,
-                    job_id=job_id,
-                    runner_token=runner_token,
-                    error=budget_message,
-                )
-            log.warning("runner.token_budget_exceeded", job_id=str(job_id), usage=totals)
-            await _publish_failure(openwebui, failed_job, budget_message)
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, budget_message)
         return JSONResponse(content=data)
 
     @app.post("/internal/jobs/{job_id}/openai/v1/embeddings")
@@ -726,6 +706,17 @@ def _estimate_input_tokens(payload: dict[str, Any]) -> int:
     """Conservative model-agnostic estimate used to reject oversized prompts early."""
     serialized = json.dumps(payload.get("messages", []), ensure_ascii=False, default=str)
     return max(1, math.ceil(len(serialized.encode("utf-8")) / 3) + 16)
+
+
+def _estimate_output_tokens(payload: object) -> int:
+    """Estimate returned tokens when a provider omits completion usage metadata."""
+    if not isinstance(payload, dict):
+        return 0
+    choices = payload.get("choices", [])
+    if not isinstance(choices, list) or not choices:
+        return 0
+    serialized = json.dumps(choices, ensure_ascii=False, default=str)
+    return math.ceil(len(serialized.encode("utf-8")) / 3) if serialized else 0
 
 
 async def _runner_job(

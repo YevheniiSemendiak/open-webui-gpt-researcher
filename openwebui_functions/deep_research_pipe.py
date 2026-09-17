@@ -33,14 +33,12 @@ class Pipe:
         openwebui_url: str = "http://open-webui:8080"
         public_search_enabled: bool = True
         require_plan_approval: bool = True
-        default_input_tokens: int = Field(default=120_000, ge=1_000)
-        default_output_tokens: int = Field(default=24_000, ge=1_000)
         default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
         default_max_queries: int = Field(default=100, ge=1)
         max_queries_cap: int = Field(
             default=100,
             ge=1,
-            description="Infrastructure-enforced maximum query budget per research job.",
+            description="Infrastructure-enforced logical research-query limit per job.",
         )
         default_wall_time_seconds: int = Field(default=3_600, ge=60)
         default_models: dict[str, str] = Field(
@@ -88,18 +86,8 @@ class Pipe:
             ge=1,
             description=(
                 "**Inherited default: `100` in the bundled configuration.** "
-                "Hard search-query budget, bounded by the administrator cap."
+                "Logical research-query limit, bounded by the administrator cap."
             ),
-        )
-        max_input_tokens: int | None = Field(
-            default=None,
-            ge=1_000,
-            description="**Inherited default: `120000` in the bundled configuration.**",
-        )
-        max_output_tokens: int | None = Field(
-            default=None,
-            ge=1_000,
-            description="**Inherited default: `24000` in the bundled configuration.**",
         )
         max_wall_time_seconds: int | None = Field(
             default=None,
@@ -175,9 +163,7 @@ class Pipe:
                 plan = (
                     f"Question: {query}\n\n"
                     f"Sources: {source_scope}\n\n"
-                    f"Budget: up to {budget['max_input_tokens']:,} input tokens, "
-                    f"{budget['max_output_tokens']:,} output tokens, "
-                    f"{budget['max_queries']} search queries, "
+                    f"Limits: up to {budget['max_queries']} search queries "
                     f"and {budget['max_wall_time_seconds'] // 60} minutes.\n\n"
                     f"Research strategy: {research['strategy']} — breadth "
                     f"{research['breadth']}, depth {research['depth']}, "
@@ -706,8 +692,6 @@ class Pipe:
                 f"but max_queries is {max_queries}"
             )
         return {
-            "max_input_tokens": pick("max_input_tokens", self.valves.default_input_tokens),
-            "max_output_tokens": pick("max_output_tokens", self.valves.default_output_tokens),
             "max_queries": max_queries,
             "max_wall_time_seconds": pick(
                 "max_wall_time_seconds", self.valves.default_wall_time_seconds
@@ -964,7 +948,7 @@ class Pipe:
             allowance = min(per_document, remaining)
             if len(text) > allowance:
                 text = (
-                    "[Earlier conversation omitted to fit the context budget]\n\n"
+                    "[Earlier conversation omitted to fit the context limit]\n\n"
                     + text[-(allowance - 62) :]
                 )
             copied = {**document, "text": text}

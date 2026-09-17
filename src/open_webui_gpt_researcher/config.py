@@ -95,7 +95,6 @@ class Settings(BaseSettings):
     scraper: str = "nodriver"
     searx_url: str = "http://searxng:8080"
     crawler_proxy_url: str | None = None
-    model_route: Literal["openwebui", "direct"] = "openwebui"
     default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}
     default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
     model_context_safety_tokens: int = Field(default=256, ge=0, le=8_192)
@@ -104,8 +103,6 @@ class Settings(BaseSettings):
     runner_cancel_poll_seconds: float = Field(default=1.0, ge=0.5)
 
     default_budget: ResearchBudget = ResearchBudget()
-    hard_max_input_tokens: int = Field(default=300_000, ge=1)
-    hard_max_output_tokens: int = Field(default=64_000, ge=1)  # 64_000
     hard_max_queries: int = Field(default=100, ge=1)
     hard_max_wall_time_seconds: int = 7_200
 
@@ -166,8 +163,6 @@ class Settings(BaseSettings):
     def validate_budget(self, budget: ResearchBudget) -> None:
         """Reject user refinements above administrator-defined hard limits."""
         checks = (
-            (budget.max_input_tokens, self.hard_max_input_tokens, "max_input_tokens"),
-            (budget.max_output_tokens, self.hard_max_output_tokens, "max_output_tokens"),
             (budget.max_queries, self.hard_max_queries, "max_queries"),
             (
                 budget.max_wall_time_seconds,
@@ -181,7 +176,7 @@ class Settings(BaseSettings):
                 raise ValueError(msg)
 
     def validate_research_shape(self, research: ResearchShape, budget: ResearchBudget) -> None:
-        """Ensure the requested tree can finish within the query budget."""
+        """Ensure the requested tree can finish within the logical query limit."""
         required = research.estimated_max_queries
         if required > budget.max_queries:
             msg = (

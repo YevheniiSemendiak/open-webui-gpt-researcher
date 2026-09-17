@@ -56,10 +56,9 @@ async def test_runner_client_protocol() -> None:
     await client.started()
     await client.heartbeat()
     await client.event("progress", {})
-    assert await client.retrieve_private_context("query") == [{"text": "passage"}]
     assert (await client.state()).value == "running"
     await client.complete(RunnerCompletion(report_markdown="# report"))
     await client.failed("failure")
     await client.cancelled()
     await client.close()
-    assert len(seen) == 9
+    assert len(seen) == 8

@@ -58,6 +58,13 @@ def test_settings_validate_budget_and_default_profile() -> None:
         settings.validate_budget(ResearchBudget(max_queries=101))
 
 
+def test_research_limits_reject_removed_token_budget_fields() -> None:
+    with pytest.raises(ValidationError, match="max_input_tokens"):
+        ResearchBudget.model_validate({"max_input_tokens": 120_000})
+    with pytest.raises(ValidationError, match="max_output_tokens"):
+        ResearchBudget.model_validate({"max_output_tokens": 24_000})
+
+
 @pytest.mark.parametrize(
     ("strategy", "breadth", "depth", "queries_per_branch", "workers", "queries"),
     [
@@ -543,6 +550,29 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     browser_config = zendriver.Config(headless=True)
     assert browser_config.sandbox is False
     assert "--proxy-server=socks5://external-proxy:1080" in browser_config.browser_args
+
+
+def test_upstream_retriever_factory_propagates_private_sources_to_children() -> None:
+    import gpt_researcher.agent as agent_module
+
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[{"kind": "collection", "id": "knowledge"}],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine()._configure_upstream(spec)
+    assert agent_module.get_retrievers({}, SimpleNamespace()) == [
+        GatewaySearxRetriever,
+        OpenWebUIRetriever,
+    ]
+
+    GPTResearcherEngine(public_search_enabled=False)._configure_upstream(spec)
+    assert agent_module.get_retrievers({}, SimpleNamespace()) == [OpenWebUIRetriever]
 
 
 async def test_upstream_report_generation_is_forced_non_streaming(

@@ -30,7 +30,7 @@ def test_artifact_action_exposes_named_subactions() -> None:
     ]
 
 
-def test_pipe_extracts_question_sources_and_user_budget() -> None:
+def test_pipe_extracts_question_sources_and_user_limits() -> None:
     pipe = Pipe()
     pipe.valves.default_max_queries = 30
     query = pipe._last_user_message({"messages": [{"role": "user", "content": "Investigate this"}]})
@@ -48,8 +48,7 @@ def test_pipe_extracts_question_sources_and_user_budget() -> None:
     ]
     research = pipe._research_shape({"research_strategy": "focused"})
     budget = pipe._budget({"max_queries": 7}, research=research)
-    assert budget["max_queries"] == 7
-    assert budget["max_output_tokens"] == pipe.valves.default_output_tokens
+    assert budget == {"max_queries": 7, "max_wall_time_seconds": 3_600}
 
 
 def test_pipe_resolves_presets_custom_shape_and_query_caps() -> None:

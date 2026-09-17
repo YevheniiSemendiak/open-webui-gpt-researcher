@@ -21,6 +21,7 @@ async def test_local_executor_passes_only_job_runtime_values(monkeypatch: Any) -
     create = AsyncMock(return_value=process)
     monkeypatch.setattr("asyncio.create_subprocess_exec", create)
     monkeypatch.setenv("OPENWEBUI_API_KEY", "must-not-leak")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
     monkeypatch.setenv("DATABASE_URL", "must-not-leak")
     settings = Settings(internal_base_url="http://api")
     executor = LocalProcessExecutor(settings)
@@ -30,6 +31,7 @@ async def test_local_executor_passes_only_job_runtime_values(monkeypatch: Any) -
     assert environment["JOB_ID"] == str(job_id)
     assert environment["RUNNER_TOKEN"] == "job-token"
     assert "OPENWEBUI_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
     assert "DATABASE_URL" not in environment
     assert await executor.inspect(job_id=job_id, attempt=2) == DispatchStatus.ACTIVE
     process.returncode = 0

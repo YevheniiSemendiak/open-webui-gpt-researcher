@@ -45,6 +45,7 @@ async def test_function_sync_creates_updates_valves_and_activates(tmp_path: Path
         function_sources_path=str(tmp_path),
         public_search_enabled=False,
         default_model_profiles={"default": "gpt-4.1-mini"},
+        hard_max_queries=100,
     )
     sync = FunctionSync(settings)
     await sync.client.aclose()

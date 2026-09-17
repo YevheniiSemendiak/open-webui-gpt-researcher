@@ -167,6 +167,20 @@ async def test_job_lifecycle_and_artifact_download(
     )
     assert completed.json() == {"state": "succeeded"}
 
+    malicious_completion = {
+        "report_markdown": "# Replaced",
+        "research_notes_markdown": "",
+        "sources": [],
+        "usage": {},
+    }
+    for authorization in ("Bearer invalid-runner", f"Bearer {claim.runner_token}"):
+        rejected = await client.post(
+            f"/internal/jobs/{job_id}/complete",
+            headers={"Authorization": authorization},
+            json=malicious_completion,
+        )
+        assert rejected.status_code == 409
+
     job = await client.get(f"/v1/research-jobs/{job_id}", headers=service_headers)
     assert job.json()["state"] == "succeeded"
     resolved = await client.get(
@@ -187,6 +201,7 @@ async def test_job_lifecycle_and_artifact_download(
         headers=service_headers,
     )
     assert internal_artifact.text.startswith("# Report")
+    assert "Replaced" not in internal_artifact.text
     other_user = {**service_headers, "X-OpenWebUI-User-Id": "user-2"}
     assert (
         await client.get(
@@ -290,7 +305,7 @@ async def test_pending_job_can_be_cancelled_immediately(
     assert cancelled.json()["state"] == "cancelled"
 
 
-async def test_budget_and_ownership_are_enforced(
+async def test_query_limit_and_ownership_are_enforced(
     api_client: tuple[httpx.AsyncClient, Any],
     service_headers: dict[str, str],
     job_payload: dict[str, object],
@@ -298,9 +313,7 @@ async def test_budget_and_ownership_are_enforced(
     client, _ = api_client
     too_large = dict(job_payload)
     too_large["budget"] = {
-        "max_input_tokens": 500_000,
-        "max_output_tokens": 2_000,
-        "max_queries": 5,
+        "max_queries": 101,
         "max_wall_time_seconds": 300,
     }
     rejected = await client.post("/v1/research-jobs", headers=service_headers, json=too_large)
@@ -339,13 +352,23 @@ async def test_each_research_shape_is_frozen_on_submission(
     assert response.json()["budget"]["max_queries"] == max_queries
 
 
-async def test_runner_failure_events_and_private_search_budget(
+async def test_runner_failure_events_and_private_search_telemetry(
     api_client: tuple[httpx.AsyncClient, Any],
     service_headers: dict[str, str],
     job_payload: dict[str, object],
 ) -> None:
     client, app = api_client
-    created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
+    payload = copy.deepcopy(job_payload)
+    payload["context_documents"] = [
+        {
+            "kind": "conversation",
+            "id": "chat-1",
+            "chat_id": "chat-1",
+            "title": "Research context",
+            "text": "private conversation evidence",
+        }
+    ]
+    created = await client.post("/v1/research-jobs", headers=service_headers, json=payload)
     job_id = created.json()["id"]
     async with app.state.database.session() as session, session.begin():
         claim = await app.state.repository.claim_next(
@@ -357,19 +380,29 @@ async def test_runner_failure_events_and_private_search_budget(
     assert (
         await client.post(f"/internal/jobs/{job_id}/started", headers=runner_headers)
     ).status_code == 200
-    for _ in range(5):
+    for _ in range(6):
         search = await client.post(
             f"/internal/jobs/{job_id}/search",
             headers=runner_headers,
             json={"query": "private query"},
         )
-        assert search.json() == []
-    exhausted = await client.post(
-        f"/internal/jobs/{job_id}/search",
-        headers=runner_headers,
-        json={"query": "one too many"},
-    )
-    assert exhausted.status_code == 429
+        assert search.json() == [
+            {
+                "text": "private conversation evidence",
+                "metadata": {
+                    "source": "openwebui-chat:chat-1",
+                    "file_id": "chat-1",
+                    "name": "Research context",
+                    "kind": "conversation",
+                },
+            }
+        ]
+    async with app.state.database.session() as session:
+        job = await app.state.repository.get_for_runner(
+            session, job_id=claim.id, runner_token=claim.runner_token
+        )
+        assert job.usage["private_searches"] == 6
+        assert job.usage["searches"] == 0
     failed = await client.post(
         f"/internal/jobs/{job_id}/failed",
         headers=runner_headers,
@@ -451,6 +484,42 @@ async def test_model_and_embedding_proxies_account_usage(
         )
         assert job.usage["input_tokens"] == 40
         assert job.usage["output_tokens"] == 10
+        assert job.usage["estimated_token_calls"] == 0
+
+
+async def test_model_proxy_estimates_usage_when_provider_omits_it(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+    job_payload: dict[str, object],
+) -> None:
+    client, app = api_client
+    created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
+    job_id = created.json()["id"]
+    async with app.state.database.session() as session, session.begin():
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
+    assert claim is not None
+    runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
+    app.state.openwebui.proxy_chat_completions = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "an estimated answer"}}]},
+        )
+    )
+    response = await client.post(
+        f"/internal/jobs/{job_id}/openai/v1/chat/completions",
+        headers=runner_headers,
+        json={"model": "test-model", "messages": [{"role": "user", "content": "question"}]},
+    )
+    assert response.status_code == 200
+    async with app.state.database.session() as session:
+        job = await app.state.repository.get_for_runner(
+            session, job_id=claim.id, runner_token=claim.runner_token
+        )
+        assert job.usage["input_tokens"] > 0
+        assert job.usage["output_tokens"] > 0
+        assert job.usage["estimated_token_calls"] == 1
 
 
 async def test_public_search_is_accounted_and_uses_searx_gateway(
@@ -471,20 +540,33 @@ async def test_public_search_is_accounted_and_uses_searx_gateway(
     app.state.public_search.search = AsyncMock(
         return_value=[{"url": "https://example.com", "title": "Example", "body": "text"}]
     )
-    response = await client.post(
+    for index in range(5):
+        response = await client.post(
+            f"/internal/jobs/{job_id}/public-search",
+            headers=runner_headers,
+            json={
+                "query": f"query {index}",
+                "max_results": 3,
+                "domains": ["example.com"],
+            },
+        )
+        assert response.status_code == 200
+    exhausted = await client.post(
         f"/internal/jobs/{job_id}/public-search",
         headers=runner_headers,
-        json={"query": "a query", "max_results": 3, "domains": ["example.com"]},
+        json={"query": "one too many", "max_results": 3},
     )
-    assert response.status_code == 200
-    app.state.public_search.search.assert_awaited_once_with(
-        query="a query", max_results=3, domains=["example.com"]
+    assert exhausted.status_code == 429
+    assert exhausted.json()["detail"] == "public search query limit exhausted"
+    assert app.state.public_search.search.await_count == 5
+    app.state.public_search.search.assert_any_await(
+        query="query 0", max_results=3, domains=["example.com"]
     )
     async with app.state.database.session() as session:
         job = await app.state.repository.get_for_runner(
             session, job_id=claim.id, runner_token=claim.runner_token
         )
-        assert job.usage["searches"] == 1
+        assert job.usage["searches"] == 5
 
 
 async def test_oversized_prompt_fails_before_openwebui_call(
@@ -502,18 +584,25 @@ async def test_oversized_prompt_fails_before_openwebui_call(
     assert claim is not None
     runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
     await client.post(f"/internal/jobs/{job_id}/started", headers=runner_headers)
+    async with app.state.database.session() as session, session.begin():
+        job_row = await app.state.repository.get_for_runner_locked(
+            session, job_id=UUID(job_id), runner_token=claim.runner_token
+        )
+        job_row.model_capabilities = [
+            {"id": "test-model", "context_length": 4_096, "max_output_tokens": 2_000}
+        ]
     app.state.openwebui.proxy_chat_completions = AsyncMock()
     response = await client.post(
         f"/internal/jobs/{job_id}/openai/v1/chat/completions",
         headers=runner_headers,
         json={"model": "test-model", "messages": [{"role": "user", "content": "x" * 40_000}]},
     )
-    assert response.status_code == 429
+    assert response.status_code == 422
     assert "approximately" in response.json()["detail"]
     app.state.openwebui.proxy_chat_completions.assert_not_awaited()
     job = await client.get(f"/v1/research-jobs/{job_id}", headers=service_headers)
     assert job.json()["state"] == "failed"
-    assert "input token budget exhausted" in job.json()["error"]
+    assert "model context exhausted" in job.json()["error"]
 
 
 async def test_output_limit_is_capped_to_model_context_window(

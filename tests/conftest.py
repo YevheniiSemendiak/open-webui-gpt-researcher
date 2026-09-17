@@ -25,8 +25,6 @@ def settings(tmp_path: Path) -> Settings:
         auto_create_schema=True,
         mode="k8s",
         default_model_profiles={"default": "test-model"},
-        hard_max_input_tokens=300_000,
-        hard_max_output_tokens=64_000,
         hard_max_queries=100,
     )
 
@@ -64,8 +62,6 @@ def job_payload() -> dict[str, object]:
             "queries_per_branch": 2,
         },
         "budget": {
-            "max_input_tokens": 10_000,
-            "max_output_tokens": 2_000,
             "max_queries": 5,
             "max_wall_time_seconds": 300,
         },

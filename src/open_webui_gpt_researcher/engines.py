@@ -24,6 +24,8 @@ REPORT_LANGUAGE_POLICY = (
 )
 _original_zendriver_config: Callable[..., Any] | None = None
 _zendriver_proxy_url: str | None = None
+_original_get_retrievers: Callable[..., list[type[Any]]] | None = None
+_job_retrievers: tuple[type[Any], ...] = ()
 
 
 class GatewaySearxRetriever:
@@ -377,7 +379,7 @@ class GPTResearcherEngine:
         else:
             if self.retriever == "searx":
                 researcher.retrievers = [GatewaySearxRetriever]
-            if spec.sources:
+            if spec.sources or spec.context_documents:
                 researcher.retrievers.append(OpenWebUIRetriever)
         public_context = await researcher.conduct_research(on_progress=on_progress)
         if pending_callbacks:
@@ -424,8 +426,8 @@ class GPTResearcherEngine:
 
     def _configure_upstream(self, spec: RunnerJobSpec) -> None:
         """Apply process-local safety adaptations to the pinned upstream package."""
-        global _original_zendriver_config, _zendriver_proxy_url
-        del spec
+        global _job_retrievers, _original_get_retrievers, _original_zendriver_config
+        global _zendriver_proxy_url
         _zendriver_proxy_url = self.crawler_proxy_url
         loaded = sys.modules.get("gpt_researcher")
         if loaded is not None and not hasattr(loaded, "__path__"):
@@ -437,6 +439,27 @@ class GPTResearcherEngine:
             # Deep-research child agents construct their own retrievers, so patch the
             # exported class as well as assigning it to the root researcher below.
             retrievers.SearxSearch = GatewaySearxRetriever
+
+        configured_retrievers: list[type[Any]] = []
+        if self.public_search_enabled and self.retriever == "searx":
+            configured_retrievers.append(GatewaySearxRetriever)
+        if spec.sources or spec.context_documents:
+            configured_retrievers.append(OpenWebUIRetriever)
+        _job_retrievers = tuple(configured_retrievers)
+
+        import gpt_researcher.agent as agent_module
+
+        if _original_get_retrievers is None:
+            _original_get_retrievers = agent_module.get_retrievers
+
+            def get_job_retrievers(headers: dict[str, str], cfg: Any) -> list[type[Any]]:
+                if _job_retrievers:
+                    return list(_job_retrievers)
+                if _original_get_retrievers is None:
+                    raise RuntimeError("GPT Researcher retriever factory was not initialized")
+                return _original_get_retrievers(headers, cfg)
+
+            agent_module.get_retrievers = get_job_retrievers
 
         if self.scraper == "nodriver":
             import zendriver

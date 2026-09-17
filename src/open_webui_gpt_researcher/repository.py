@@ -573,12 +573,18 @@ class JobRepository:
         input_tokens: int = 0,
         output_tokens: int = 0,
         searches: int = 0,
+        private_searches: int = 0,
+        estimated_token_calls: int = 0,
     ) -> dict[str, int]:
         job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         usage = dict(job.usage or {})
         usage["input_tokens"] = max(0, int(usage.get("input_tokens", 0)) + input_tokens)
         usage["output_tokens"] = max(0, int(usage.get("output_tokens", 0)) + output_tokens)
         usage["searches"] = max(0, int(usage.get("searches", 0)) + searches)
+        usage["private_searches"] = max(0, int(usage.get("private_searches", 0)) + private_searches)
+        usage["estimated_token_calls"] = max(
+            0, int(usage.get("estimated_token_calls", 0)) + estimated_token_calls
+        )
         job.usage = usage
         job.updated_at = datetime.now(UTC)
         await session.flush()

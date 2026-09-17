@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def default_report_formats() -> list[Literal["markdown", "json"]]:
@@ -111,16 +111,12 @@ class ResearchShape(BaseModel):
 
 
 class ResearchBudget(BaseModel):
-    """User-visible limits validated against administrator caps."""
+    """User-visible operational limits validated against administrator caps."""
 
-    max_input_tokens: int = Field(default=120_000, ge=1_000)
-    max_output_tokens: int = Field(default=24_000, ge=1_000)
+    model_config = ConfigDict(extra="forbid")
+
     max_queries: int = Field(default=100, ge=1)
     max_wall_time_seconds: int = Field(default=3_600, ge=60)
-
-    @property
-    def max_total_tokens(self) -> int:
-        return self.max_input_tokens + self.max_output_tokens
 
 
 class CreateJobRequest(BaseModel):

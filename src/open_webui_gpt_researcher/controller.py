@@ -86,10 +86,20 @@ class Controller:
                 continue
 
             action: Literal["renew", "requeue", "fail", "cancel"]
-            if status == DispatchStatus.ACTIVE:
-                action = "renew"
-            elif dispatch.state == JobState.CANCEL_REQUESTED:
+            if dispatch.state == JobState.CANCEL_REQUESTED:
+                if status == DispatchStatus.ACTIVE:
+                    try:
+                        await self.executor.stop(job_id=dispatch.id, attempt=dispatch.attempt)
+                    except Exception:
+                        log.exception(
+                            "controller.cancelled_dispatch_cleanup_failed",
+                            job_id=str(dispatch.id),
+                            attempt=dispatch.attempt,
+                        )
+                        continue
                 action = "cancel"
+            elif status == DispatchStatus.ACTIVE:
+                action = "renew"
             elif status == DispatchStatus.MISSING:
                 action = "requeue"
             else:

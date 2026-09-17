@@ -46,7 +46,7 @@ spec:
               value: {{ $value | quote }}
             {{- end }}
             - name: INTERNAL_BASE_URL
-              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.api.service.port | quote }}
+              value: {{ printf "http://%s.%s.svc:%v" (include "research.fullname" .) .Release.Namespace .Values.api.service.port | quote }}
           {{- with .Values.api.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
