@@ -271,6 +271,26 @@ this integration.
 - Builds are reproducible against the reviewed commit.
 - Advancing GPT Researcher requires explicit compatibility and end-to-end testing.
 
+## ADR-017: Derive release versions exclusively from Git tags
+
+**Status:** Accepted
+
+A release tag is the sole authority for the application image tag, OCI chart version, chart
+`appVersion`, Python package metadata, API version, and synchronized Open WebUI Function versions.
+Checked-in metadata uses development placeholders and is never manually prepared for a release.
+
+Release tags use `vMAJOR.MINOR.PATCH`, optionally followed by `-a.N`, `-b.N`, or `-rc.N`. Exact
+version tags are immutable. Only stable releases update the floating `MAJOR.MINOR` and `latest`
+image tags.
+
+**Consequences:**
+
+- A version mismatch between checked-in files can no longer block an otherwise valid tagged
+  release.
+- The packaged chart selects the same exact-version application image by default.
+- A publishing-workflow fix requires a tag on a commit containing that fix; changing the branch
+  does not alter the workflow associated with an existing tag.
+
 ## Recovery and retention consequences
 
 Dispatch leases recover a gateway failure before a runner starts. Active runners persist

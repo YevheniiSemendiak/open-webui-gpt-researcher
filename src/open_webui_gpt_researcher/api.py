@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from . import __version__
 from .artifacts import ArtifactStore, FilesystemArtifactStore, S3ArtifactStore
 from .auth import (
     OpenWebUIPrincipal,
@@ -128,7 +129,7 @@ def create_app(
 
     app = FastAPI(
         title="Open WebUI GPT Researcher",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.database = database

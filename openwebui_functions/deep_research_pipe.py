@@ -1,7 +1,7 @@
 """
 title: Deep Research
 author: Open WebUI GPT Researcher contributors
-version: 0.1.0
+version: 0.0.0-dev
 required_open_webui_version: 0.11.0
 requirements: httpx>=0.28
 """

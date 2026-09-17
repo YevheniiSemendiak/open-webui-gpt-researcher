@@ -33,7 +33,7 @@ spec:
         {{- toYaml .Values.api.imagePullSecrets | nindent 8 }}
       containers:
         - name: api
-          image: {{ printf "%s:%s" .Values.api.image.repository .Values.api.image.tag }}
+          image: {{ printf "%s:%s" .Values.api.image.repository (.Values.api.image.tag | default .Chart.AppVersion) }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           args: ["api"]
           securityContext:
@@ -46,7 +46,7 @@ spec:
             - name: INTERNAL_BASE_URL
               value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.api.service.port | quote }}
             - name: RUNNER_IMAGE
-              value: {{ printf "%s:%s" .Values.researchJob.image.repository .Values.researchJob.image.tag | quote }}
+              value: {{ printf "%s:%s" .Values.researchJob.image.repository (.Values.researchJob.image.tag | default .Chart.AppVersion) | quote }}
             - name: RUNNER_IMAGE_PULL_POLICY
               value: {{ .Values.researchJob.image.pullPolicy | quote }}
             - name: RUNNER_IMAGE_PULL_SECRETS

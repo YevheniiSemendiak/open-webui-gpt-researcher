@@ -6,7 +6,8 @@ api:
   replicaCount: 2
   image:
     repository: ghcr.io/yevheniisemendiak/open-webui-gpt-researcher
-    tag: "0.1.0"
+    # Empty uses the chart appVersion, which the release workflow derives from the Git tag.
+    tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   service:
@@ -85,7 +86,8 @@ api:
 researchJob:
   image:
     repository: ghcr.io/yevheniisemendiak/open-webui-gpt-researcher
-    tag: "0.1.0"
+    # Empty uses the chart appVersion, which the release workflow derives from the Git tag.
+    tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   serviceAccount:
