@@ -1,0 +1,196 @@
+name: open-webui-deep-research
+
+x-research-environment: &research-environment
+  ENVIRONMENT: development
+  DATABASE_URL: postgresql+asyncpg://research:research@postgres:5432/research
+  ARTIFACT_BASE_URL: http://localhost:8090
+  INTERNAL_BASE_URL: http://api:8090
+  OPENWEBUI_URL: http://open-webui:8080
+  OPENWEBUI_TIMEOUT_SECONDS: ${OPENWEBUI_TIMEOUT_SECONDS:-600}
+  ARTIFACT_BACKEND: s3
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: research-artifacts
+  MODE: local
+  PUBLIC_SEARCH_ENABLED: ${PUBLIC_SEARCH_ENABLED:-true}
+  RETRIEVER: ${RETRIEVER:-searx}
+  SCRAPER: ${SCRAPER:-nodriver}
+  SEARX_URL: ${SEARX_URL:-http://searxng:8080}
+  CRAWLER_PROXY_URL: ${CRAWLER_PROXY_URL:-}
+  DEFAULT_MODEL_PROFILES: '${DEFAULT_MODEL_PROFILES:-{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}}'
+  DEFAULT_RESEARCH_STRATEGY: ${DEFAULT_RESEARCH_STRATEGY:-balanced}
+  MODEL_CONTEXT_SAFETY_TOKENS: ${MODEL_CONTEXT_SAFETY_TOKENS:-256}
+  REASONING_EFFORT: ${REASONING_EFFORT:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+  MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
+  HARD_MAX_QUERIES: ${HARD_MAX_QUERIES:-100}
+  DISPATCH_LEASE_SECONDS: ${DISPATCH_LEASE_SECONDS:-120}
+  DISPATCH_RECONCILE_BATCH_SIZE: ${DISPATCH_RECONCILE_BATCH_SIZE:-100}
+  RUNNER_HEARTBEAT_SECONDS: ${RUNNER_HEARTBEAT_SECONDS:-10}
+  RUNNER_STALE_SECONDS: ${RUNNER_STALE_SECONDS:-60}
+  RUNNER_MAX_ATTEMPTS: ${RUNNER_MAX_ATTEMPTS:-2}
+  EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-30}
+  ARTIFACT_RETENTION_DAYS: ${ARTIFACT_RETENTION_DAYS:-90}
+  JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-90}
+  ORPHAN_GRACE_SECONDS: ${ORPHAN_GRACE_SECONDS:-86400}
+  CLEANUP_BATCH_SIZE: ${CLEANUP_BATCH_SIZE:-100}
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: research
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: research
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U research -d research"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./dev/postgres/init.sql:/docker-entrypoint-initdb.d/01-openwebui.sql:ro
+    ports:
+      - "5432:5432"
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-secret
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 minio minio-secret
+        && mc mb --ignore-existing local/research-artifacts
+
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest@sha256:f1aca3f61c7ff4552b8d54c0ab7fb458e907b78f51c503210cf450c900adca2c}
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    volumes:
+      - type: bind
+        source: ${SEARXNG_SETTINGS_FILE:-./dev/searxng/settings.yml}
+        target: /etc/searxng/settings.yml
+        read_only: true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8081}:8080"
+
+  migrate:
+    build: .
+    command: ["migrate"]
+    environment: *research-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: ["api"]
+    environment:
+      <<: *research-environment
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-local-service-token-change-before-sharing}
+      SIGNING_SECRET: ${SIGNING_SECRET:-local-signing-secret-change-before-sharing-1234}
+      OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: minio-secret
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8090/health/ready')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "8090:8090"
+
+  open-webui:
+    image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.3}
+    environment:
+      DATABASE_URL: postgresql://research:research@postgres:5432/openwebui
+      WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:-local-open-webui-secret-change-before-sharing}
+      ENABLE_API_KEYS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - openwebui-data:/app/backend/data
+    ports:
+      - "3000:8080"
+
+  function-sync:
+    build: .
+    command: ["sync-functions", "--if-configured"]
+    environment:
+      <<: *research-environment
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-local-service-token-change-before-sharing}
+      OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
+      FUNCTION_SOURCES_PATH: /app/openwebui_functions
+    depends_on:
+      api:
+        condition: service_healthy
+      open-webui:
+        condition: service_healthy
+
+  cleanup:
+    profiles: [maintenance]
+    build: .
+    command: ["cleanup"]
+    environment:
+      <<: *research-environment
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: minio-secret
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  minio-data:
+  openwebui-data:
+  postgres-data:

@@ -1,0 +1,131 @@
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "research.fullname" . }}-api
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "research.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "research.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "research.apiServiceAccount" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        {{- toYaml .Values.api.podSecurityContext | nindent 8 }}
+      imagePullSecrets:
+        {{- toYaml .Values.api.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ printf "%s:%s" .Values.api.image.repository .Values.api.image.tag }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          args: ["api"]
+          securityContext:
+            {{- toYaml .Values.api.containerSecurityContext | nindent 12 }}
+          env:
+            {{- range $name, $value := .Values.api.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: INTERNAL_BASE_URL
+              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.api.service.port | quote }}
+            - name: RUNNER_IMAGE
+              value: {{ printf "%s:%s" .Values.researchJob.image.repository .Values.researchJob.image.tag | quote }}
+            - name: RUNNER_IMAGE_PULL_POLICY
+              value: {{ .Values.researchJob.image.pullPolicy | quote }}
+            - name: RUNNER_IMAGE_PULL_SECRETS
+              value: {{ .Values.researchJob.imagePullSecrets | toJson | quote }}
+            - name: RUNNER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUNNER_OWNER_DEPLOYMENT
+              value: {{ printf "%s-api" (include "research.fullname" .) | quote }}
+            - name: RUNNER_SERVICE_ACCOUNT
+              value: {{ include "research.researchJobServiceAccount" . | quote }}
+            - name: RUNNER_ACTIVE_DEADLINE_SECONDS
+              value: {{ .Values.researchJob.activeDeadlineSeconds | quote }}
+            - name: RUNNER_TTL_SECONDS_AFTER_FINISHED
+              value: {{ .Values.researchJob.ttlSecondsAfterFinished | quote }}
+            - name: RUNNER_BACKOFF_LIMIT
+              value: {{ .Values.researchJob.backoffLimit | quote }}
+            - name: RUNNER_CPU_REQUEST
+              value: {{ .Values.researchJob.resources.requests.cpu | quote }}
+            - name: RUNNER_MEMORY_REQUEST
+              value: {{ .Values.researchJob.resources.requests.memory | quote }}
+            - name: RUNNER_CPU_LIMIT
+              value: {{ .Values.researchJob.resources.limits.cpu | quote }}
+            - name: RUNNER_MEMORY_LIMIT
+              value: {{ .Values.researchJob.resources.limits.memory | quote }}
+            - name: RUNNER_ENV
+              value: {{ .Values.researchJob.env | toJson | quote }}
+            - name: RUNNER_ENV_FROM
+              value: {{ .Values.researchJob.envFrom | toJson | quote }}
+            - name: RUNNER_POD_LABELS
+              value: {{ .Values.researchJob.podLabels | toJson | quote }}
+            - name: RUNNER_POD_ANNOTATIONS
+              value: {{ .Values.researchJob.podAnnotations | toJson | quote }}
+            - name: RUNNER_NODE_SELECTOR
+              value: {{ .Values.researchJob.nodeSelector | toJson | quote }}
+            - name: RUNNER_TOLERATIONS
+              value: {{ .Values.researchJob.tolerations | toJson | quote }}
+            - name: RUNNER_AFFINITY
+              value: {{ .Values.researchJob.affinity | toJson | quote }}
+            - name: RUNNER_POD_SECURITY_CONTEXT
+              value: {{ .Values.researchJob.podSecurityContext | toJson | quote }}
+            - name: RUNNER_CONTAINER_SECURITY_CONTEXT
+              value: {{ .Values.researchJob.containerSecurityContext | toJson | quote }}
+            - name: RUNNER_EXTRA_VOLUMES
+              value: {{ .Values.researchJob.extraVolumes | toJson | quote }}
+            - name: RUNNER_EXTRA_VOLUME_MOUNTS
+              value: {{ .Values.researchJob.extraVolumeMounts | toJson | quote }}
+          {{- with .Values.api.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8090
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: artifacts, mountPath: /data/artifacts}
+            {{- with .Values.api.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: artifacts
+          emptyDir: {}
+        {{- with .Values.api.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      nodeSelector:
+        {{- toYaml .Values.api.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.api.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.api.affinity | nindent 8 }}
+{{- end }}

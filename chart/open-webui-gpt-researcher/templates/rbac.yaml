@@ -1,0 +1,31 @@
+{{- if .Values.api.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "research.fullname" . }}-job-manager
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: [{{ printf "%s-api" (include "research.fullname" .) | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "research.fullname" . }}-job-manager
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "research.fullname" . }}-job-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "research.apiServiceAccount" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

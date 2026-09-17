@@ -1,0 +1,46 @@
+services:
+  vpn-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.openvpn-proxy
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      OPENVPN_CONFIG_FILE: /vpn/${OPENVPN_CONFIG_NAME:-client.ovpn}
+      OPENVPN_AUTH_FILE: /run/secrets/openvpn-auth
+    volumes:
+      - type: bind
+        source: ${OPENVPN_CONFIG_DIR:?set OPENVPN_CONFIG_DIR to the OpenVPN configuration directory}
+        target: /vpn
+        read_only: true
+    secrets:
+      - openvpn-auth
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/openvpn-proxy-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  searxng:
+    depends_on:
+      vpn-proxy:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${SEARXNG_SETTINGS_FILE:-./dev/searxng/settings.local.yml}
+        target: /etc/searxng/settings.yml
+        read_only: true
+
+  api:
+    depends_on:
+      vpn-proxy:
+        condition: service_healthy
+    environment:
+      CRAWLER_PROXY_URL: socks5://vpn-proxy:1080
+
+secrets:
+  openvpn-auth:
+    file: ${OPENVPN_AUTH_FILE:?set OPENVPN_AUTH_FILE to an OpenVPN username/password file}

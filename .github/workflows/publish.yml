@@ -1,0 +1,135 @@
+name: Publish release artifacts
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      chart_registry: ${{ steps.release.outputs.chart_registry }}
+      chart_ref: ${{ steps.release.outputs.chart_ref }}
+      image: ${{ steps.release.outputs.image }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - id: release
+        name: Resolve and validate release metadata
+        shell: bash
+        run: |
+          chart_metadata="$(helm show chart chart/open-webui-gpt-researcher)"
+          chart_version="$(awk '$1 == "version:" { print $2 }' <<< "$chart_metadata")"
+          app_version="$(awk '$1 == "appVersion:" { print $2 }' <<< "$chart_metadata" | tr -d '"')"
+
+          if [[ -z "$chart_version" || "$chart_version" != "$app_version" ]]; then
+            echo "Chart version and appVersion must be present and equal" >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "${GITHUB_REF_NAME#v}" != "$chart_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match chart version $chart_version" >&2
+            exit 1
+          fi
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repository="${GITHUB_REPOSITORY,,}"
+          chart_registry="oci://ghcr.io/$owner/charts"
+
+          echo "chart_registry=$chart_registry" >> "$GITHUB_OUTPUT"
+          echo "chart_ref=$chart_registry/open-webui-gpt-researcher:$chart_version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/$repository" >> "$GITHUB_OUTPUT"
+          echo "version=$chart_version" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.metadata.outputs.image }}
+          tags: |
+            type=raw,value=${{ needs.metadata.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.metadata.outputs.version }}
+            type=sha
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ needs.metadata.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  helm-chart:
+    needs: [metadata, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHART_REGISTRY: ${{ needs.metadata.outputs.chart_registry }}
+      CHART_REF: ${{ needs.metadata.outputs.chart_ref }}
+      CHART_VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - name: Lint and package chart
+        shell: bash
+        run: |
+          helm lint chart/open-webui-gpt-researcher
+          helm template release-check chart/open-webui-gpt-researcher --set searxng.enabled=true >/dev/null
+          mkdir -p dist/helm
+          helm package chart/open-webui-gpt-researcher \
+            --destination dist/helm \
+            --version "$CHART_VERSION" \
+            --app-version "$CHART_VERSION"
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish chart
+        shell: bash
+        run: helm push "dist/helm/open-webui-gpt-researcher-$CHART_VERSION.tgz" "$CHART_REGISTRY"
+      - name: Verify published chart
+        shell: bash
+        run: |
+          mkdir -p dist/verify
+          helm pull "${CHART_REF%:*}" \
+            --version "$CHART_VERSION" \
+            --untar \
+            --untardir dist/verify
+          helm template release-check dist/verify/open-webui-gpt-researcher >/dev/null

@@ -1,0 +1,22 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - yahoo
+
+engines:
+  - name: yahoo
+    engine: yahoo
+    shortcut: yh
+    disabled: false
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "local-development-only-change-me"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json

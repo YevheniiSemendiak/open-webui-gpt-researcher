@@ -1,0 +1,116 @@
+# Experimental, optional Firecrawl overlay. The default stack uses SearXNG + NoDriver.
+x-firecrawl-environment: &firecrawl-environment
+  ENV: local
+  USE_DB_AUTHENTICATION: "false"
+  REDIS_URL: redis://firecrawl-redis:6379
+  REDIS_RATE_LIMIT_URL: redis://firecrawl-redis:6379
+  PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-playwright:3000/scrape
+  NUQ_DATABASE_URL: postgresql://postgres:postgres@firecrawl-postgres:5432/postgres
+  NUQ_DATABASE_URL_LISTEN: postgresql://postgres:postgres@firecrawl-postgres:5432/postgres
+  NUQ_WAIT_MODE: poll
+  NUM_WORKERS_PER_QUEUE: ${NUM_WORKERS_PER_QUEUE:-2}
+  CRAWL_CONCURRENT_REQUESTS: ${CRAWL_CONCURRENT_REQUESTS:-5}
+  BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-5}
+  BULL_AUTH_KEY: ${BULL_AUTH_KEY:-local-firecrawl-admin}
+
+services:
+  firecrawl-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:latest@sha256:aed86f62858f29bd971abddcdeb301c12888098d2cf5d33c1ba42b053bc460f6
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - firecrawl-postgres-data:/var/lib/postgresql/data
+
+  firecrawl-redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--bind", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  firecrawl-playwright:
+    image: ghcr.io/firecrawl/playwright-service:latest@sha256:df1a393ce8bfc3801570a826a9b0dcc400ae48789adb4a0ad9d6cbf0229b059b
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: ${MAX_CONCURRENT_PAGES:-5}
+      BLOCK_MEDIA: ${BLOCK_MEDIA:-true}
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+
+  firecrawl:
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.209-production@sha256:cebde741a0e6e8711f6714da0aab507f1285d3a083594728df23a31e19eeb7fb}
+    command: ["node", "dist/src/index.js"]
+    environment:
+      <<: *firecrawl-environment
+      HOST: 0.0.0.0
+      PORT: 3002
+      NUQ_POD_NAME: firecrawl-api
+    depends_on:
+      firecrawl-postgres:
+        condition: service_healthy
+      firecrawl-redis:
+        condition: service_healthy
+      firecrawl-playwright:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3002/v0/health/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    ports:
+      - "127.0.0.1:${FIRECRAWL_PORT:-3002}:3002"
+
+  firecrawl-worker:
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.209-production@sha256:cebde741a0e6e8711f6714da0aab507f1285d3a083594728df23a31e19eeb7fb}
+    command: ["node", "dist/src/services/queue-worker.js"]
+    environment:
+      <<: *firecrawl-environment
+      WORKER_PORT: 3005
+      NUQ_POD_NAME: firecrawl-worker
+    depends_on:
+      firecrawl-postgres:
+        condition: service_healthy
+      firecrawl-redis:
+        condition: service_healthy
+      firecrawl-playwright:
+        condition: service_started
+
+  firecrawl-nuq-worker:
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.209-production@sha256:cebde741a0e6e8711f6714da0aab507f1285d3a083594728df23a31e19eeb7fb}
+    command: ["node", "dist/src/services/worker/nuq-worker.js"]
+    environment:
+      <<: *firecrawl-environment
+      NUQ_WORKER_PORT: 3006
+      NUQ_POD_NAME: firecrawl-nuq-worker
+    depends_on:
+      firecrawl-postgres:
+        condition: service_healthy
+      firecrawl-redis:
+        condition: service_healthy
+      firecrawl-playwright:
+        condition: service_started
+
+  firecrawl-nuq-prefetch-worker:
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.209-production@sha256:cebde741a0e6e8711f6714da0aab507f1285d3a083594728df23a31e19eeb7fb}
+    command: ["node", "dist/src/services/worker/nuq-prefetch-worker.js"]
+    environment:
+      <<: *firecrawl-environment
+      NUQ_PREFETCH_WORKER_PORT: 3011
+      NUQ_PREFETCH_REPLICAS: 1
+      NUQ_POD_NAME: firecrawl-nuq-prefetch-worker
+    depends_on:
+      firecrawl-postgres:
+        condition: service_healthy
+      firecrawl-redis:
+        condition: service_healthy
+
+volumes:
+  firecrawl-postgres-data:
