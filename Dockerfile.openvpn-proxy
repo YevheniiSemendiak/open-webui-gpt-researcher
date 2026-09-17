@@ -1,3 +1,5 @@
+ARG VERSION=0.0.0.dev0
+
 FROM alpine:3.22.1
 
 RUN apk add --no-cache ca-certificates dante-server iproute2 openvpn tini
@@ -7,5 +9,9 @@ COPY dev/openvpn-proxy/healthcheck.sh /usr/local/bin/openvpn-proxy-healthcheck
 COPY dev/openvpn-proxy/sockd.conf /etc/sockd.conf
 
 RUN chmod 0755 /usr/local/bin/openvpn-proxy /usr/local/bin/openvpn-proxy-healthcheck
+
+ARG VERSION
+LABEL org.opencontainers.image.source="https://github.com/yevheniisemendiak/open-webui-gpt-researcher" \
+      org.opencontainers.image.version="${VERSION}"
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/openvpn-proxy"]

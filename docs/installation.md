@@ -226,6 +226,7 @@ the selected pages.
 A `v*` release tag publishes:
 
 - `ghcr.io/yevheniisemendiak/open-webui-gpt-researcher:VERSION`
+- `ghcr.io/yevheniisemendiak/open-webui-gpt-researcher-openvpn-proxy:VERSION`
 - `oci://ghcr.io/yevheniisemendiak/charts/open-webui-gpt-researcher:VERSION`
 
 The exact tag version is used for the chart version, chart `appVersion`, and application image.

@@ -19,6 +19,7 @@ class ReleaseMetadata:
     major_minor: str
     stable: bool
     image: str
+    openvpn_proxy_image: str
     chart_registry: str
     chart_ref: str
 
@@ -34,11 +35,13 @@ def resolve_release_metadata(*, tag: str, owner: str, repository: str) -> Releas
     normalized_owner = owner.lower()
     normalized_repository = repository.lower()
     chart_registry = f"oci://ghcr.io/{normalized_owner}/charts"
+    image = f"ghcr.io/{normalized_repository}"
     return ReleaseMetadata(
         version=version,
         major_minor=f"{match.group('major')}.{match.group('minor')}",
         stable=match.group("prerelease") is None,
-        image=f"ghcr.io/{normalized_repository}",
+        image=image,
+        openvpn_proxy_image=f"{image}-openvpn-proxy",
         chart_registry=chart_registry,
         chart_ref=f"{chart_registry}/open-webui-gpt-researcher:{version}",
     )
@@ -63,6 +66,7 @@ def main() -> None:
         "chart_registry": metadata.chart_registry,
         "chart_ref": metadata.chart_ref,
         "image": metadata.image,
+        "openvpn_proxy_image": metadata.openvpn_proxy_image,
         "major_minor": metadata.major_minor,
         "stable": str(metadata.stable).lower(),
         "version": metadata.version,

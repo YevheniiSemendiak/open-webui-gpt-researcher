@@ -19,6 +19,9 @@ def test_prerelease_tag_is_the_authoritative_version() -> None:
     assert metadata.major_minor == "26.9"
     assert metadata.stable is False
     assert metadata.image == "ghcr.io/yevheniisemendiak/open-webui-gpt-researcher"
+    assert metadata.openvpn_proxy_image == (
+        "ghcr.io/yevheniisemendiak/open-webui-gpt-researcher-openvpn-proxy"
+    )
     assert metadata.chart_ref == (
         "oci://ghcr.io/yevheniisemendiak/charts/open-webui-gpt-researcher:26.9.0-a.1"
     )
@@ -59,5 +62,7 @@ def test_publish_workflow_does_not_use_checked_in_versions() -> None:
     assert "VERSION=${{ needs.metadata.outputs.version }}" in workflow
     assert "PACKAGE_VERSION" not in workflow
     assert "RELEASE_VERSION" not in workflow
+    assert "file: ${{ matrix.file }}" in workflow
+    assert "org.opencontainers.image.source=https://github.com/${{ github.repository }}" in workflow
     assert '--version "$CHART_VERSION"' in workflow
     assert '--app-version "$CHART_VERSION"' in workflow

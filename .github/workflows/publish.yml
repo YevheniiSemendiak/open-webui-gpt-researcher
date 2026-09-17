@@ -23,6 +23,7 @@ jobs:
       chart_ref: ${{ steps.release.outputs.chart_ref }}
       image: ${{ steps.release.outputs.image }}
       major_minor: ${{ steps.release.outputs.major_minor }}
+      openvpn_proxy_image: ${{ steps.release.outputs.openvpn_proxy_image }}
       stable: ${{ steps.release.outputs.stable }}
       version: ${{ steps.release.outputs.version }}
     steps:
@@ -31,10 +32,25 @@ jobs:
         name: Resolve and validate release metadata
         run: python dev/resolve_release_metadata.py
 
-  image:
+  images:
     needs: metadata
+    name: Publish ${{ matrix.name }} image
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: application
+            file: Dockerfile
+            image: ${{ needs.metadata.outputs.image }}
+            cache_scope: application
+            description: Open WebUI integration for GPT Researcher
+          - name: OpenVPN proxy
+            file: Dockerfile.openvpn-proxy
+            image: ${{ needs.metadata.outputs.openvpn_proxy_image }}
+            cache_scope: openvpn-proxy
+            description: Optional OpenVPN and SOCKS proxy for Open WebUI GPT Researcher
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-qemu-action@v4
@@ -47,32 +63,38 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ needs.metadata.outputs.image }}
+          images: ${{ matrix.image }}
           tags: |
             type=raw,value=${{ needs.metadata.outputs.version }}
             type=raw,value=${{ needs.metadata.outputs.major_minor }},enable=${{ needs.metadata.outputs.stable == 'true' }}
             type=raw,value=latest,enable=${{ needs.metadata.outputs.stable == 'true' }}
             type=sha
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+            org.opencontainers.image.description=${{ matrix.description }}
       - id: build
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.file }}
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             VERSION=${{ needs.metadata.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
       - uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ${{ needs.metadata.outputs.image }}
+          subject-name: ${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
   helm-chart:
-    needs: [metadata, image]
+    needs: [metadata, images]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
