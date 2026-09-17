@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 ARG VERSION=0.0.0.dev0
 
-FROM python:3.12-slim-bookworm AS builder
+FROM python:3.14-slim-bookworm AS builder
 RUN pip install --no-cache-dir uv==0.11.7
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && sed -i "/name = \"open-webui-gpt-researcher\"/{n;s/^version = \".*\"/version = \"${VERSION}\"/;}" uv.lock \
     && uv sync --frozen --no-dev --no-editable
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes chromium \
     && rm -rf /var/lib/apt/lists/* \
