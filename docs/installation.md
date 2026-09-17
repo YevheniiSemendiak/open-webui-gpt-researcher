@@ -81,7 +81,7 @@ does not infer missing limits and has no administrator-maintained fallback map.
 For reasoning models, configure a large enough per-request maximum output for hidden reasoning
 tokens. Set
 `REASONING_EFFORT` when a reasoning model is exposed under a custom Open WebUI ID that GPT
-Researcher cannot classify by name.
+Researcher cannot classify by name. Leave it blank to avoid sending a reasoning-effort override.
 
 ## Private-only research
 
@@ -275,10 +275,11 @@ Function sync manages only:
 - the Deep Research model metadata; and
 - the `save_deep_research_to_knowledge` Action.
 
-It preserves unrelated Functions, existing user Valves, and unrelated model actions. Re-running
-sync does not alter an already accepted research job. If Open WebUI API-key route restrictions are
-enabled, allow the Function and model-management routes plus the chat-completion, embedding,
-retrieval, chat-event, file, and Knowledge routes used by the integration.
+It preserves unrelated Functions, existing user Valves, model access grants, and unrelated model
+actions. Re-running sync does not alter an already accepted research job. If Open WebUI API-key
+route restrictions are enabled, allow the Function and model-management routes plus the
+chat-completion, embedding, retrieval, chat-event, file, and Knowledge routes used by the
+integration.
 
 No public ingress is required for the research gateway. The Pipe uses the cluster-private API and,
 on completion, uploads artifacts to Open WebUI with the initiating user's authorization. Open

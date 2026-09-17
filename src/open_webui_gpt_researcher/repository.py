@@ -145,6 +145,18 @@ class JobRepository:
             raise JobNotFoundError
         return job
 
+    async def get_for_user_locked(
+        self, session: AsyncSession, *, job_id: UUID, user_id: str
+    ) -> ResearchJob:
+        job = await session.scalar(
+            select(ResearchJob)
+            .where(ResearchJob.id == str(job_id), ResearchJob.user_id == user_id)
+            .with_for_update()
+        )
+        if job is None:
+            raise JobNotFoundError
+        return job
+
     async def get_for_runner(
         self, session: AsyncSession, *, job_id: UUID, runner_token: str
     ) -> ResearchJob:
@@ -313,6 +325,8 @@ class JobRepository:
             job.finished_at = now
             event_type = "job.failed"
             data = {"error": job.error}
+        if JobState(job.state) in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
+            job.runner_token_hash = None
         job.dispatch_lease_expires_at = None
         job.updated_at = now
         await self._append_event_locked(session, job, event_type, data)
@@ -399,6 +413,8 @@ class JobRepository:
             job.finished_at = now
             event_type = "job.failed"
             data = {"error": job.error}
+        if JobState(job.state) in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
+            job.runner_token_hash = None
         job.dispatch_lease_expires_at = None
         job.updated_at = now
         await self._append_event_locked(session, job, event_type, data)
@@ -435,7 +451,7 @@ class JobRepository:
         event_type: str,
         data: dict[str, object],
     ) -> ResearchEvent:
-        job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         if JobState(job.state) in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
             raise InvalidStateError("cannot append to a terminal job")
         job.updated_at = datetime.now(UTC)
@@ -453,7 +469,7 @@ class JobRepository:
     async def mark_started(
         self, session: AsyncSession, *, job_id: UUID, runner_token: str
     ) -> ResearchJob:
-        job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         state = JobState(job.state)
         if state not in {JobState.DISPATCHED, JobState.RUNNING, JobState.CANCEL_REQUESTED}:
             raise InvalidStateError(f"cannot start job in state {job.state}")
@@ -471,10 +487,11 @@ class JobRepository:
     async def request_cancel(
         self, session: AsyncSession, *, job_id: UUID, user_id: str
     ) -> ResearchJob:
-        job = await self.get_for_user(session, job_id=job_id, user_id=user_id)
+        job = await self.get_for_user_locked(session, job_id=job_id, user_id=user_id)
         state = JobState(job.state)
         if state == JobState.PENDING:
             job.state = JobState.CANCELLED.value
+            job.runner_token_hash = None
             job.finished_at = datetime.now(UTC)
             job.updated_at = job.finished_at
             await self._append_event_locked(session, job, "job.cancelled", {})
@@ -482,17 +499,21 @@ class JobRepository:
             job.state = JobState.CANCEL_REQUESTED.value
             job.updated_at = datetime.now(UTC)
             await self._append_event_locked(session, job, "job.cancel_requested", {})
+        elif state in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
+            job.runner_token_hash = None
         return job
 
     async def mark_cancelled(
         self, session: AsyncSession, *, job_id: UUID, runner_token: str
     ) -> ResearchJob:
-        job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         if job.state == JobState.CANCELLED.value:
+            job.runner_token_hash = None
             return job
         if JobState(job.state) not in {JobState.CANCEL_REQUESTED, JobState.RUNNING}:
             raise InvalidStateError(f"cannot cancel job in state {job.state}")
         job.state = JobState.CANCELLED.value
+        job.runner_token_hash = None
         job.finished_at = datetime.now(UTC)
         job.updated_at = job.finished_at
         job.dispatch_lease_expires_at = None
@@ -507,12 +528,14 @@ class JobRepository:
         runner_token: str,
         error: str,
     ) -> ResearchJob:
-        job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         if job.state == JobState.FAILED.value:
+            job.runner_token_hash = None
             return job
         if JobState(job.state) not in {JobState.DISPATCHED, JobState.RUNNING}:
             raise InvalidStateError(f"cannot fail job in state {job.state}")
         job.state = JobState.FAILED.value
+        job.runner_token_hash = None
         job.error = error[:20_000]
         job.finished_at = datetime.now(UTC)
         job.updated_at = job.finished_at
@@ -529,12 +552,13 @@ class JobRepository:
         completion: RunnerCompletion,
         result: dict[str, object],
     ) -> ResearchJob:
-        job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
         if job.state == JobState.CANCEL_REQUESTED.value:
             return await self.mark_cancelled(session, job_id=job_id, runner_token=runner_token)
         if job.state != JobState.RUNNING.value:
             raise InvalidStateError(f"cannot complete job in state {job.state}")
         job.state = JobState.SUCCEEDED.value
+        job.runner_token_hash = None
         job.result = result
         job.usage = {**(job.usage or {}), **completion.usage}
         job.finished_at = datetime.now(UTC)

@@ -118,6 +118,7 @@ but must preserve:
 
 - unrelated Functions and Actions;
 - user-specific Valves;
+- existing Deep Research model access grants;
 - unrelated actions associated with the Deep Research model; and
 - already accepted or running research jobs.
 

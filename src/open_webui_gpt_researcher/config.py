@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     orphan_grace_seconds: int = Field(default=86_400, ge=3_600, le=2_592_000)
     cleanup_batch_size: int = Field(default=100, ge=1, le=10_000)
 
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def normalize_reasoning_effort(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("crawler_proxy_url", mode="before")
     @classmethod
     def validate_crawler_proxy_url(cls, value: object) -> object:

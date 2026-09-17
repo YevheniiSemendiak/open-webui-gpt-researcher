@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.controller import Controller
@@ -58,6 +59,24 @@ class RecordingExecutor:
         self.stops.append((job_id, attempt))
 
 
+async def test_user_lifecycle_lookup_locks_the_job_row() -> None:
+    repository = JobRepository()
+    session = AsyncMock()
+    stored = object()
+    session.scalar.return_value = stored
+
+    result = await repository.get_for_user_locked(
+        session,
+        job_id=uuid4(),
+        user_id="user",
+    )
+
+    statement = session.scalar.await_args.args[0]
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert result is stored
+    assert "FOR UPDATE" in sql
+
+
 async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'controller.sqlite'}")
     await database.create_all()
@@ -84,6 +103,7 @@ async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None
         stored = await session.get(type(job), job_id)
         assert stored is not None
         assert stored.state == JobState.FAILED.value
+        assert stored.runner_token_hash is None
         assert "scheduler unavailable" in str(stored.error)
     assert await controller.dispatch_one() is False
     await database.close()
@@ -216,6 +236,7 @@ async def test_controller_finishes_cancelled_dispatch(
         assert stored is not None
         assert stored.state == JobState.CANCELLED.value
         assert stored.finished_at is not None
+        assert stored.runner_token_hash is None
     assert [attempt for _, attempt in executor.stops] == expected_stops
     await database.close()
 
@@ -308,6 +329,7 @@ async def test_controller_stops_and_fails_stale_runner_after_attempt_limit(
         stored = await session.get(type(job), job.id)
         assert stored is not None
         assert stored.state == JobState.FAILED.value
+        assert stored.runner_token_hash is None
         assert "heartbeat expired" in str(stored.error)
     await database.close()
 

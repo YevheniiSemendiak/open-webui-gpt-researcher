@@ -166,6 +166,12 @@ async def test_job_lifecycle_and_artifact_download(
         },
     )
     assert completed.json() == {"state": "succeeded"}
+    assert (await client.get(f"/internal/jobs/{job_id}", headers=runner_headers)).status_code == 404
+    async with app.state.database.session() as session:
+        stored = await app.state.repository.get_for_user(
+            session, job_id=UUID(job_id), user_id="user-1"
+        )
+        assert stored.runner_token_hash is None
 
     malicious_completion = {
         "report_markdown": "# Replaced",
@@ -305,6 +311,38 @@ async def test_pending_job_can_be_cancelled_immediately(
     assert cancelled.json()["state"] == "cancelled"
 
 
+async def test_terminal_runner_spec_is_rejected_for_legacy_retained_token(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+    job_payload: dict[str, object],
+) -> None:
+    client, app = api_client
+    created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
+    job_id = created.json()["id"]
+    async with app.state.database.session() as session, session.begin():
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
+        assert claim is not None
+        job = await app.state.repository.get_for_runner_locked(
+            session, job_id=claim.id, runner_token=claim.runner_token
+        )
+        job.state = "succeeded"
+
+    response = await client.get(
+        f"/internal/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {claim.runner_token}"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "job is terminal"
+
+    cancel = await client.post(f"/v1/research-jobs/{job_id}:cancel", headers=service_headers)
+    assert cancel.status_code == 200
+    async with app.state.database.session() as session:
+        stored = await app.state.repository.get_for_user(session, job_id=claim.id, user_id="user-1")
+        assert stored.runner_token_hash is None
+
+
 async def test_query_limit_and_ownership_are_enforced(
     api_client: tuple[httpx.AsyncClient, Any],
     service_headers: dict[str, str],
@@ -409,6 +447,12 @@ async def test_runner_failure_events_and_private_search_telemetry(
         json={"error": "provider failed"},
     )
     assert failed.json() == {"state": "failed"}
+    assert (await client.get(f"/internal/jobs/{job_id}", headers=runner_headers)).status_code == 404
+    async with app.state.database.session() as session:
+        stored = await app.state.repository.get_for_user(
+            session, job_id=UUID(job_id), user_id="user-1"
+        )
+        assert stored.runner_token_hash is None
     events = await client.get(f"/v1/research-jobs/{job_id}/events", headers=service_headers)
     assert "event: job.failed" in events.text
 
@@ -435,6 +479,12 @@ async def test_running_job_cancel_handshake(
     assert state.json() == {"state": "cancel_requested"}
     acknowledged = await client.post(f"/internal/jobs/{job_id}/cancelled", headers=runner_headers)
     assert acknowledged.json() == {"state": "cancelled"}
+    assert (await client.get(f"/internal/jobs/{job_id}", headers=runner_headers)).status_code == 404
+    async with app.state.database.session() as session:
+        stored = await app.state.repository.get_for_user(
+            session, job_id=UUID(job_id), user_id="user-1"
+        )
+        assert stored.runner_token_hash is None
 
 
 async def test_model_and_embedding_proxies_account_usage(
@@ -563,9 +613,7 @@ async def test_public_search_is_accounted_and_uses_searx_gateway(
         query="query 0", max_results=3, domains=["example.com"]
     )
     async with app.state.database.session() as session:
-        job = await app.state.repository.get_for_runner(
-            session, job_id=claim.id, runner_token=claim.runner_token
-        )
+        job = await app.state.repository.get_for_user(session, job_id=claim.id, user_id="user-1")
         assert job.usage["searches"] == 5
 
 

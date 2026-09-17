@@ -94,3 +94,65 @@ async def test_function_sync_creates_updates_valves_and_activates(tmp_path: Path
         if method == "POST" and path == "/api/v1/models/create"
     )
     assert model["meta"]["actionIds"] == ["save_deep_research_to_knowledge"]
+    assert model["access_grants"] == [
+        {"principal_type": "user", "principal_id": "*", "permission": "read"}
+    ]
+
+
+async def test_function_sync_preserves_empty_model_access_grants() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/models/model":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "deep_research",
+                    "base_model_id": None,
+                    "name": "Deep Research",
+                    "meta": {"description": "old", "actionIds": []},
+                    "params": {},
+                    "access_grants": [],
+                },
+            )
+        if request.method == "POST":
+            requests.append((request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"id": "deep_research"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    sync = FunctionSync(
+        Settings(
+            _env_file=None,
+            openwebui_url="http://openwebui",
+            openwebui_api_key="admin-key",
+        )
+    )
+    await sync.client.aclose()
+    sync.client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://openwebui",
+    )
+    try:
+        changed: list[str] = []
+        await sync._sync_deep_research_model(changed)
+    finally:
+        await sync.close()
+
+    assert changed == ["updated:model:deep_research"]
+    assert requests == [
+        (
+            "/api/v1/models/model/update",
+            {
+                "id": "deep_research",
+                "base_model_id": None,
+                "name": "Deep Research",
+                "meta": {
+                    "description": "Durable, multi-source deep research.",
+                    "actionIds": ["save_deep_research_to_knowledge"],
+                },
+                "params": {},
+                "access_grants": [],
+                "is_active": True,
+            },
+        )
+    ]

@@ -27,7 +27,6 @@ spec:
         {{- end }}
     spec:
       restartPolicy: Never
-      serviceAccountName: {{ include "research.apiServiceAccount" . }}
       automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.api.podSecurityContext | nindent 8 }}

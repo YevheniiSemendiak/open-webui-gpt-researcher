@@ -186,6 +186,7 @@ job-scoped credential used only for its internal job endpoints.
 - Runner environments do not contain the Open WebUI integration key.
 - A credential from one run cannot access another run.
 - The gateway validates the runner credential and active job state before accepting artifact writes.
+- Runner credentials are revoked when a job reaches a terminal state.
 - Research Jobs can be scheduled and isolated independently of the gateway.
 
 ## ADR-011: Make Function synchronization targeted and idempotent
@@ -193,7 +194,8 @@ job-scoped credential used only for its internal job endpoints.
 **Status:** Accepted
 
 Function sync manages only the Deep Research Pipe, its model metadata, and the Knowledge Action. It
-preserves unrelated Functions, user-specific Valves, and unrelated model actions.
+preserves unrelated Functions, user-specific Valves, model access grants, and unrelated model
+actions.
 
 **Consequences:**
 

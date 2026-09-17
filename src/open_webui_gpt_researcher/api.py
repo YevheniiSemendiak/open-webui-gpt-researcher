@@ -358,6 +358,7 @@ def create_app(
                 job = await repository.get_for_runner(
                     session, job_id=job_id, runner_token=runner_token
                 )
+                _ensure_active(job)
                 return to_runner_spec(job).model_dump(mode="json")
         except JobNotFoundError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error

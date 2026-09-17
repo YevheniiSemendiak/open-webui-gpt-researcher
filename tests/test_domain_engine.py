@@ -58,6 +58,12 @@ def test_settings_validate_budget_and_default_profile() -> None:
         settings.validate_budget(ResearchBudget(max_queries=101))
 
 
+def test_blank_reasoning_effort_is_unset() -> None:
+    assert Settings(_env_file=None, reasoning_effort="").reasoning_effort is None
+    assert Settings(_env_file=None, reasoning_effort="  ").reasoning_effort is None
+    assert Settings(_env_file=None, reasoning_effort="high").reasoning_effort == "high"
+
+
 def test_research_limits_reject_removed_token_budget_fields() -> None:
     with pytest.raises(ValidationError, match="max_input_tokens"):
         ResearchBudget.model_validate({"max_input_tokens": 120_000})

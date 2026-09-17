@@ -124,20 +124,24 @@ class FunctionSync:
                 "actionIds": action_ids,
             }
         )
+        access_grants: object = (
+            [
+                {
+                    "principal_type": "user",
+                    "principal_id": "*",
+                    "permission": "read",
+                }
+            ]
+            if current is None
+            else current.get("access_grants")
+        )
         form: dict[str, object] = {
             "id": "deep_research",
             "base_model_id": (current or {}).get("base_model_id"),
             "name": (current or {}).get("name") or "Deep Research",
             "meta": meta,
             "params": dict((current or {}).get("params") or {}),
-            "access_grants": (current or {}).get("access_grants")
-            or [
-                {
-                    "principal_type": "user",
-                    "principal_id": "*",
-                    "permission": "read",
-                }
-            ],
+            "access_grants": access_grants,
             "is_active": True,
         }
         if current is None:
