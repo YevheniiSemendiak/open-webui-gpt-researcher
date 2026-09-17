@@ -60,6 +60,7 @@ class Controller:
                 log.warning("controller.leadership_lost")
                 return
             reconciled = await self.reconcile_expired_dispatches()
+            reconciled += await self.reconcile_stale_runners()
             dispatched = await self.dispatch_one()
             if not dispatched and reconciled == 0:
                 await asyncio.sleep(self.settings.controller_poll_seconds)
@@ -107,6 +108,52 @@ class Controller:
                     "controller.dispatch_reconciled",
                     job_id=str(dispatch.id),
                     attempt=dispatch.attempt,
+                    status=status.value,
+                    action=action,
+                )
+        return reconciled
+
+    async def reconcile_stale_runners(self) -> int:
+        async with self.database.session() as session:
+            runners = await self.repository.list_stale_runners(
+                session,
+                stale_seconds=self.settings.runner_stale_seconds,
+                limit=self.settings.dispatch_reconcile_batch_size,
+            )
+        reconciled = 0
+        for runner in runners:
+            try:
+                status = await self.executor.inspect(job_id=runner.id, attempt=runner.attempt)
+                if status == DispatchStatus.ACTIVE:
+                    await self.executor.stop(job_id=runner.id, attempt=runner.attempt)
+            except Exception:
+                log.exception(
+                    "controller.stale_runner_cleanup_failed",
+                    job_id=str(runner.id),
+                    attempt=runner.attempt,
+                )
+                continue
+
+            if runner.state == JobState.CANCEL_REQUESTED:
+                action: Literal["retry", "fail", "cancel"] = "cancel"
+            elif runner.attempt < self.settings.runner_max_attempts:
+                action = "retry"
+            else:
+                action = "fail"
+            error = f"runner heartbeat expired; executor status was {status.value}"
+            async with self.database.session() as session, session.begin():
+                changed = await self.repository.reconcile_stale_runner(
+                    session,
+                    runner=runner,
+                    action=action,
+                    error=error,
+                )
+            if changed:
+                reconciled += 1
+                log.warning(
+                    "controller.stale_runner_reconciled",
+                    job_id=str(runner.id),
+                    attempt=runner.attempt,
                     status=status.value,
                     action=action,
                 )

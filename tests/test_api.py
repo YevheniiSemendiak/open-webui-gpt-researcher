@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import Any
 from unittest.mock import AsyncMock
 from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
+import pytest
 from asgi_lifespan import LifespanManager
 
-from open_webui_gpt_researcher.api import create_app
+from open_webui_gpt_researcher.api import _progress_description, create_app
 from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.controller import Controller
 
@@ -32,6 +34,56 @@ async def test_local_mode_embeds_dispatcher(settings: Settings, monkeypatch: Any
     async with LifespanManager(app):
         await asyncio.wait_for(started.wait(), timeout=1)
     assert stopped.is_set()
+
+
+def test_progress_descriptions_are_accurate_and_compact() -> None:
+    assert _progress_description(
+        {
+            "stage": "retrieval",
+            "knowledge_sources": 1,
+            "file_sources": 2,
+            "context_items": 3,
+        }
+    ) == (
+        "Preparing research context · 1 Knowledge collection, 2 files, 3 conversation context items"
+    )
+    assert _progress_description(
+        {
+            "stage": "researching",
+            "batch_kind": "follow_up",
+            "completed_queries": 1,
+            "total_queries": 2,
+            "current_query": "  ownership   and management changes  ",
+        }
+    ) == (
+        "Researching follow-up sources · 1 of 2 searches complete in this batch · "
+        "Latest search started: ownership and management changes"
+    )
+    assert (
+        _progress_description(
+            {
+                "stage": "planning",
+                "activity": "research_plan_ready",
+                "breadth": 2,
+                "depth": 3,
+            }
+        )
+        == "Research plan ready · 2 searches in the initial batch · follow-up searches enabled"
+    )
+    assert (
+        _progress_description({"stage": "researching", "activity": "pages_read", "page_reads": 7})
+        == "Reading sources · 7 successful page reads completed"
+    )
+    assert (
+        _progress_description(
+            {
+                "stage": "researching",
+                "activity": "evidence_gathering_complete",
+                "visited_urls": 11,
+            }
+        )
+        == "Evidence gathering complete · 11 distinct web source URLs visited"
+    )
 
 
 async def test_model_catalog_intersects_user_access_with_authoritative_metadata(
@@ -86,6 +138,8 @@ async def test_job_lifecycle_and_artifact_download(
 
     started = await client.post(f"/internal/jobs/{job_id}/started", headers=runner_headers)
     assert started.json() == {"state": "running"}
+    heartbeat = await client.post(f"/internal/jobs/{job_id}/heartbeat", headers=runner_headers)
+    assert heartbeat.json() == {"state": "running"}
     progress = await client.post(
         f"/internal/jobs/{job_id}/events",
         headers=runner_headers,
@@ -97,8 +151,8 @@ async def test_job_lifecycle_and_artifact_download(
         for call in app.state.openwebui.emit_message_event.await_args_list
         if call.kwargs["event_type"] == "status" and not call.kwargs["data"]["done"]
     ]
-    assert progress_updates[0]["description"].startswith("Deep research in progress")
-    assert progress_updates[-1]["description"] == ("Deep research in progress: writing the report…")
+    assert progress_updates[0]["description"] == "Starting deep research…"
+    assert progress_updates[-1]["description"] == "Writing the report from gathered evidence…"
 
     completed = await client.post(
         f"/internal/jobs/{job_id}/complete",
@@ -245,7 +299,7 @@ async def test_budget_and_ownership_are_enforced(
     too_large["budget"] = {
         "max_input_tokens": 500_000,
         "max_output_tokens": 2_000,
-        "max_searches": 5,
+        "max_queries": 5,
         "max_wall_time_seconds": 300,
     }
     rejected = await client.post("/v1/research-jobs", headers=service_headers, json=too_large)
@@ -255,6 +309,33 @@ async def test_budget_and_ownership_are_enforced(
     job_id = created.json()["id"]
     other_user = {**service_headers, "X-OpenWebUI-User-Id": "user-2"}
     assert (await client.get(f"/v1/research-jobs/{job_id}", headers=other_user)).status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("research", "max_queries"),
+    [
+        ({"strategy": "focused", "breadth": 1, "depth": 1, "queries_per_branch": 2}, 5),
+        ({"strategy": "balanced", "breadth": 2, "depth": 2, "queries_per_branch": 2}, 25),
+        ({"strategy": "broad", "breadth": 4, "depth": 2, "queries_per_branch": 2}, 49),
+        ({"strategy": "deep", "breadth": 2, "depth": 3, "queries_per_branch": 3}, 71),
+        ({"strategy": "custom", "breadth": 3, "depth": 3, "queries_per_branch": 1}, 64),
+    ],
+)
+async def test_each_research_shape_is_frozen_on_submission(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+    job_payload: dict[str, object],
+    research: dict[str, object],
+    max_queries: int,
+) -> None:
+    client, _ = api_client
+    payload = copy.deepcopy(job_payload)
+    payload["research"] = research
+    payload["budget"]["max_queries"] = max_queries  # type: ignore[index]
+    response = await client.post("/v1/research-jobs", headers=service_headers, json=payload)
+    assert response.status_code == 202
+    assert response.json()["research"] == research
+    assert response.json()["budget"]["max_queries"] == max_queries
 
 
 async def test_runner_failure_events_and_private_search_budget(

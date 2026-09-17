@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -14,6 +15,13 @@ import httpx
 from .domain import RunnerCompletion, RunnerJobSpec
 
 ProgressCallback = Callable[[str, dict[str, object]], Awaitable[None]]
+
+REPORT_LANGUAGE_POLICY = (
+    "language explicitly requested in the Current user research request; if that request "
+    "does not explicitly name a language, use the language in which the Current user "
+    "research request is written. Ignore Integration instructions when determining the "
+    "report language"
+)
 _original_zendriver_config: Callable[..., Any] | None = None
 
 
@@ -90,14 +98,16 @@ def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dic
 
 def continuation_query(spec: RunnerJobSpec) -> str:
     if spec.iteration <= 1:
-        return spec.query
+        return f"<current_user_research_request>\n{spec.query}\n</current_user_research_request>"
     return (
-        f"{spec.query}\n\n"
+        f"<current_user_research_request>\n{spec.query}\n</current_user_research_request>\n\n"
+        "<integration_instructions>\n"
         f"This is iteration {spec.iteration} of an ongoing research thread. Use the supplied "
         "Open WebUI conversation context and prior reports as evidence. Extend, correct, and "
         "verify earlier findings instead of restarting the investigation. Produce a complete "
         "revised report and include a section titled 'Changes since previous iteration' that "
-        "summarizes new evidence, corrected conclusions, contradictions, and remaining gaps."
+        "summarizes new evidence, corrected conclusions, contradictions, and remaining gaps.\n"
+        "</integration_instructions>"
     )
 
 
@@ -153,6 +163,120 @@ def normalize_progress_update(update: Any) -> dict[str, object]:
         if isinstance(value, (str, int, float, bool)):
             data[name] = value
     return data
+
+
+class ProgressEmitter:
+    """Serialize and deduplicate durable progress updates from concurrent callbacks."""
+
+    def __init__(self, callback: ProgressCallback) -> None:
+        self.callback = callback
+        self._lock = asyncio.Lock()
+        self._seen: set[str] = set()
+
+    async def emit(self, data: dict[str, object]) -> None:
+        signature = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+        async with self._lock:
+            if signature in self._seen:
+                return
+            self._seen.add(signature)
+            await self.callback("research.progress", data)
+
+
+class GPTResearcherTelemetry:
+    """Translate selected upstream telemetry into stable, user-facing progress data."""
+
+    def __init__(self, emitter: ProgressEmitter) -> None:
+        self.emitter = emitter
+        self.page_reads = 0
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        if payload.get("type") != "logs":
+            return
+        step = str(payload.get("step") or "")
+        content = str(payload.get("content") or "")
+        if step == "scraping_content":
+            count = self._first_integer(content)
+            if count is not None:
+                self.page_reads += count
+                await self.emitter.emit(
+                    {
+                        "stage": "researching",
+                        "activity": "pages_read",
+                        "page_reads": self.page_reads,
+                    }
+                )
+        elif step == "fetching_query_content":
+            await self.emitter.emit({"stage": "researching", "activity": "extracting_evidence"})
+        elif step == "writing_report":
+            await self.emitter.emit({"stage": "writing"})
+        elif step == "mcp_results":
+            count = self._first_integer(content)
+            if count is not None:
+                await self.emitter.emit(
+                    {
+                        "stage": "researching",
+                        "activity": "mcp_results",
+                        "result_count": count,
+                    }
+                )
+
+    async def on_tool_start(self, *_: object, **__: object) -> None:
+        return None
+
+    async def on_agent_action(self, *_: object, **__: object) -> None:
+        return None
+
+    async def on_research_step(self, step: str, details: dict[str, Any]) -> None:
+        if step == "deep_research_initialize":
+            await self.emitter.emit(
+                {
+                    "stage": "planning",
+                    "activity": "research_plan_ready",
+                    "breadth": self._integer(details.get("breadth")),
+                    "depth": self._integer(details.get("depth")),
+                }
+            )
+        elif step == "deep_research_complete":
+            await self.emitter.emit(
+                {
+                    "stage": "researching",
+                    "activity": "evidence_gathering_complete",
+                    "visited_urls": self._integer(details.get("visited_urls")),
+                }
+            )
+        elif step == "writing_report":
+            await self.emitter.emit({"stage": "writing"})
+
+    @staticmethod
+    def _first_integer(content: str) -> int | None:
+        match = re.search(r"\b(\d+)\b", content)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _integer(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class ResearchBatchTracker:
+    """Label recursive upstream progress objects without claiming global completion."""
+
+    def __init__(self) -> None:
+        self._batches: list[Any] = []
+
+    def normalize(self, update: Any) -> dict[str, object]:
+        data = normalize_progress_update(update)
+        if isinstance(update, dict):
+            return data
+        for index, candidate in enumerate(self._batches, start=1):
+            if candidate is update:
+                batch_number = index
+                break
+        else:
+            self._batches.append(update)
+            batch_number = len(self._batches)
+        data["batch_number"] = batch_number
+        data["batch_kind"] = "initial" if batch_number == 1 else "follow_up"
+        return data
 
 
 class OpenWebUIRetriever:
@@ -222,10 +346,13 @@ class GPTResearcherEngine:
         from gpt_researcher import GPTResearcher
 
         pending_callbacks: set[asyncio.Future[None]] = set()
+        emitter = ProgressEmitter(progress)
+        telemetry = GPTResearcherTelemetry(emitter)
+        batches = ResearchBatchTracker()
 
         def on_progress(update: Any) -> None:
-            data = normalize_progress_update(update)
-            task = asyncio.ensure_future(progress("research.progress", data))
+            data = batches.normalize(update)
+            task = asyncio.ensure_future(emitter.emit(data))
             pending_callbacks.add(task)
             task.add_done_callback(pending_callbacks.discard)
 
@@ -234,9 +361,11 @@ class GPTResearcherEngine:
             query=research_query,
             report_type=spec.report_type,
             verbose=True,
+            websocket=telemetry,
+            log_handler=telemetry,
         )
-        await progress(
-            "research.progress",
+        researcher.cfg.language = REPORT_LANGUAGE_POLICY
+        await emitter.emit(
             {"stage": "planning", "message": "Planning research and identifying sources"},
         )
         if not self.public_search_enabled:
@@ -252,10 +381,7 @@ class GPTResearcherEngine:
         if pending_callbacks:
             await asyncio.gather(*pending_callbacks, return_exceptions=True)
             pending_callbacks.clear()
-        await progress(
-            "research.progress",
-            {"stage": "writing", "message": "Synthesizing evidence into the report"},
-        )
+        await emitter.emit({"stage": "writing"})
         private_text = "\n\n".join(
             f"[Private Open WebUI source]\n{item.get('text', '')}" for item in private_context
         )
@@ -271,8 +397,7 @@ class GPTResearcherEngine:
         if not report or report.lower() == "none":
             raise RuntimeError("GPT Researcher returned an empty report")
         report = ensure_iteration_summary(report, spec)
-        await progress(
-            "research.progress",
+        await emitter.emit(
             {"stage": "finalizing", "message": "Finalizing report and source artifacts"},
         )
 

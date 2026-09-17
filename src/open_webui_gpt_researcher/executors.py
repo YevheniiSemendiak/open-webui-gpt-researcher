@@ -4,6 +4,7 @@ import asyncio
 import enum
 import os
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -24,6 +25,8 @@ class Executor(Protocol):
     async def submit(self, *, job_id: UUID, runner_token: str, attempt: int) -> None: ...
 
     async def inspect(self, *, job_id: UUID, attempt: int) -> DispatchStatus: ...
+
+    async def stop(self, *, job_id: UUID, attempt: int) -> None: ...
 
 
 @dataclass
@@ -68,6 +71,19 @@ class LocalProcessExecutor:
             return DispatchStatus.ACTIVE
         self._processes.pop((job_id, attempt), None)
         return DispatchStatus.EXITED
+
+    async def stop(self, *, job_id: UUID, attempt: int) -> None:
+        process = self._processes.pop((job_id, attempt), None)
+        if process is None or process.returncode is not None:
+            return
+        with suppress(ProcessLookupError):
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except TimeoutError:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
 
 
 class KubernetesJobExecutor:
@@ -217,6 +233,18 @@ class KubernetesJobExecutor:
         if status is not None and ((status.failed or 0) > 0 or (status.succeeded or 0) > 0):
             return DispatchStatus.EXITED
         return DispatchStatus.ACTIVE
+
+    async def stop(self, *, job_id: UUID, attempt: int) -> None:
+        await self._configure()
+        try:
+            await client.BatchV1Api().delete_namespaced_job(
+                name=self._job_name(job_id, attempt),
+                namespace=self.settings.runner_namespace,
+                body=client.V1DeleteOptions(propagation_policy="Background"),
+            )
+        except ApiException as error:
+            if error.status != 404:
+                raise
 
 
 def make_executor(settings: Settings) -> Executor:

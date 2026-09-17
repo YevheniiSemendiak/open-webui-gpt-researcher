@@ -5,14 +5,7 @@ from uuid import uuid4
 import httpx
 
 from open_webui_gpt_researcher.domain import RunnerCompletion
-from open_webui_gpt_researcher.runner import RunnerClient, plan_deep_research
-
-
-def test_deep_research_plan_respects_known_upstream_search_fanout() -> None:
-    assert plan_deep_research(4) == (1, 1, 1)
-    assert plan_deep_research(6) == (1, 1, 3)
-    assert plan_deep_research(30) == (2, 2, 2)
-    assert plan_deep_research(60) == (2, 3, 2)
+from open_webui_gpt_researcher.runner import RunnerClient
 
 
 async def test_runner_client_protocol() -> None:
@@ -61,6 +54,7 @@ async def test_runner_client_protocol() -> None:
     )
     assert (await client.get_spec()).query == "question"
     await client.started()
+    await client.heartbeat()
     await client.event("progress", {})
     assert await client.retrieve_private_context("query") == [{"text": "passage"}]
     assert (await client.state()).value == "running"
@@ -68,4 +62,4 @@ async def test_runner_client_protocol() -> None:
     await client.failed("failure")
     await client.cancelled()
     await client.close()
-    assert len(seen) == 8
+    assert len(seen) == 9

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,7 @@ class RecordingExecutor:
         status: DispatchStatus = DispatchStatus.MISSING,
     ) -> None:
         self.calls: list[tuple[UUID, str, int]] = []
+        self.stops: list[tuple[UUID, int]] = []
         self.error = error
         self.status = status
 
@@ -51,6 +53,9 @@ class RecordingExecutor:
     async def inspect(self, *, job_id: UUID, attempt: int) -> DispatchStatus:
         del job_id, attempt
         return self.status
+
+    async def stop(self, *, job_id: UUID, attempt: int) -> None:
+        self.stops.append((job_id, attempt))
 
 
 async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None:
@@ -202,6 +207,98 @@ async def test_controller_finishes_cancelled_missing_dispatch(tmp_path: Path) ->
     await database.close()
 
 
+async def test_controller_requeues_stale_running_job_and_preserves_budget_usage(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'stale-runner.sqlite'}")
+    await database.create_all()
+    repository = JobRepository()
+    async with database.session() as session, session.begin():
+        job, _ = await repository.create_job(
+            session,
+            user_id="u",
+            idempotency_key="stale-runner-test",
+            request=CreateJobRequest(
+                query="Recover runner", chat_id="c", message_id="m", **MODEL_REQUEST
+            ),
+        )
+        claim = await repository.claim_next(session, max_concurrent_jobs=5, lease_seconds=120)
+        assert claim is not None
+        await repository.mark_started(session, job_id=claim.id, runner_token=claim.runner_token)
+        job.usage = {"searches": 3}
+        job.updated_at = datetime.now(UTC) - timedelta(seconds=120)
+
+    executor = RecordingExecutor(status=DispatchStatus.MISSING)
+    controller = Controller(
+        settings=Settings(
+            database_url="sqlite+aiosqlite://",
+            runner_heartbeat_seconds=1,
+            runner_stale_seconds=10,
+            runner_max_attempts=2,
+        ),
+        database=database,
+        repository=repository,
+        executor=executor,
+    )
+    assert await controller.reconcile_stale_runners() == 1
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.state == JobState.PENDING.value
+        assert stored.runner_token_hash is None
+        assert stored.started_at is None
+        assert stored.usage == {"searches": 3}
+
+    assert await controller.dispatch_one() is True
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.attempt == 2
+    await database.close()
+
+
+async def test_controller_stops_and_fails_stale_runner_after_attempt_limit(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'stale-limit.sqlite'}")
+    await database.create_all()
+    repository = JobRepository()
+    async with database.session() as session, session.begin():
+        job, _ = await repository.create_job(
+            session,
+            user_id="u",
+            idempotency_key="stale-limit-test",
+            request=CreateJobRequest(
+                query="Fail stale runner", chat_id="c", message_id="m", **MODEL_REQUEST
+            ),
+        )
+        claim = await repository.claim_next(session, max_concurrent_jobs=5, lease_seconds=120)
+        assert claim is not None
+        await repository.mark_started(session, job_id=claim.id, runner_token=claim.runner_token)
+        job.updated_at = datetime.now(UTC) - timedelta(seconds=120)
+
+    executor = RecordingExecutor(status=DispatchStatus.ACTIVE)
+    controller = Controller(
+        settings=Settings(
+            database_url="sqlite+aiosqlite://",
+            runner_heartbeat_seconds=1,
+            runner_stale_seconds=10,
+            runner_max_attempts=1,
+        ),
+        database=database,
+        repository=repository,
+        executor=executor,
+    )
+    assert await controller.reconcile_stale_runners() == 1
+    assert executor.stops == [(UUID(job.id), 1)]
+    async with database.session() as session:
+        stored = await session.get(type(job), job.id)
+        assert stored is not None
+        assert stored.state == JobState.FAILED.value
+        assert "heartbeat expired" in str(stored.error)
+    await database.close()
+
+
 class FakeLeaderLease:
     def __init__(self, *, acquired: bool, valid: bool = True) -> None:
         self.acquired = acquired
@@ -285,6 +382,7 @@ class FakeRunnerClient:
         self.was_started = False
         self.was_cancelled = False
         self.was_closed = False
+        self.heartbeats = 0
 
     async def get_spec(self) -> RunnerJobSpec:
         return self.spec
@@ -294,6 +392,9 @@ class FakeRunnerClient:
 
     async def event(self, event_type: str, data: dict[str, object]) -> None:
         self.events.append((event_type, data))
+
+    async def heartbeat(self) -> None:
+        self.heartbeats += 1
 
     async def retrieve_private_context(self, query: str) -> list[dict[str, object]]:
         return [{"text": query}]
@@ -352,6 +453,18 @@ async def test_runner_completes_and_configures_budgets(monkeypatch: Any) -> None
         },
         {"text": "Test runner"},
     ]
+    assert client.events[0] == (
+        "research.progress",
+        {
+            "stage": "retrieval",
+            "file_sources": 0,
+            "knowledge_sources": 1,
+            "context_items": 1,
+        },
+    )
+    assert os.environ["DEEP_RESEARCH_BREADTH"] == "2"
+    assert os.environ["DEEP_RESEARCH_DEPTH"] == "2"
+    assert os.environ["MAX_ITERATIONS"] == "2"
 
 
 async def test_runner_honors_cancel_request() -> None:

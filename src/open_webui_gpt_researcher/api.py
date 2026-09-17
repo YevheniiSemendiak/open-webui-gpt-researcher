@@ -176,6 +176,7 @@ def create_app(
     ) -> JSONResponse:
         try:
             settings.validate_budget(request.budget)
+            settings.validate_research_shape(request.research, request.budget)
         except ValueError as error:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
         try:
@@ -377,6 +378,15 @@ def create_app(
         except (JobNotFoundError, InvalidStateError) as error:
             raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
 
+    @app.post("/internal/jobs/{job_id}/heartbeat")
+    async def runner_heartbeat(job_id: UUID, runner_token: RunnerToken) -> dict[str, str]:
+        try:
+            async with database.session() as session, session.begin():
+                job = await repository.heartbeat(session, job_id=job_id, runner_token=runner_token)
+            return {"state": job.state}
+        except (JobNotFoundError, InvalidStateError) as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+
     @app.post("/internal/jobs/{job_id}/events")
     async def runner_event(
         job_id: UUID, event: RunnerEvent, runner_token: RunnerToken
@@ -411,13 +421,13 @@ def create_app(
                 )
                 _ensure_active(job)
                 current_searches = int((job.usage or {}).get("searches", 0))
-                maximum = int(job.budget["max_searches"])
+                maximum = int(job.budget["max_queries"])
                 if current_searches >= maximum:
                     budget_failure = await repository.mark_failed(
                         session,
                         job_id=job_id,
                         runner_token=runner_token,
-                        error="search budget exhausted",
+                        error="query budget exhausted",
                     )
                 else:
                     await repository.consume_usage(
@@ -425,8 +435,8 @@ def create_app(
                     )
                 sources = to_runner_spec(job).sources
             if budget_failure is not None:
-                await _publish_failure(openwebui, budget_failure, "search budget exhausted")
-                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "search budget exhausted")
+                await _publish_failure(openwebui, budget_failure, "query budget exhausted")
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "query budget exhausted")
             passages = await openwebui.retrieve(query=body.query, sources=sources)
             return [{"text": passage.text, "metadata": passage.metadata} for passage in passages]
         except JobNotFoundError as error:
@@ -448,20 +458,20 @@ def create_app(
                 if not settings.public_search_enabled:
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "public search is disabled")
                 current = int((job.usage or {}).get("searches", 0))
-                if current >= int(job.budget["max_searches"]):
+                if current >= int(job.budget["max_queries"]):
                     budget_failure = await repository.mark_failed(
                         session,
                         job_id=job_id,
                         runner_token=runner_token,
-                        error="search budget exhausted",
+                        error="query budget exhausted",
                     )
                 else:
                     await repository.consume_usage(
                         session, job_id=job_id, runner_token=runner_token, searches=1
                     )
             if budget_failure is not None:
-                await _publish_failure(openwebui, budget_failure, "search budget exhausted")
-                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "search budget exhausted")
+                await _publish_failure(openwebui, budget_failure, "query budget exhausted")
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "query budget exhausted")
             return await public_search.search(
                 query=body.query,
                 max_results=body.max_results,
@@ -776,24 +786,74 @@ async def _publish_completion(
 
 def _progress_description(data: dict[str, object]) -> str:
     stage = str(data.get("stage", "researching"))
-    descriptions = {
-        "starting": "Deep research in progress: starting the research worker…",
-        "retrieval": "Deep research in progress: preparing attached sources…",
-        "planning": "Deep research in progress: planning searches and sources…",
-        "searching": "Deep research in progress: searching for evidence…",
-        "researching": "Deep research in progress: reading and comparing sources…",
-        "writing": "Deep research in progress: writing the report…",
-        "finalizing": "Deep research in progress: finalizing report artifacts…",
-    }
-    description = descriptions.get(stage, descriptions["researching"])
+    activity = str(data.get("activity") or "")
+
+    if stage == "starting":
+        return "Starting deep research…"
+    if stage == "retrieval":
+        context_parts: list[str] = []
+        for key, singular, plural in (
+            ("knowledge_sources", "Knowledge collection", "Knowledge collections"),
+            ("file_sources", "file", "files"),
+            ("context_items", "conversation context item", "conversation context items"),
+        ):
+            count = _progress_integer(data.get(key))
+            if count:
+                context_parts.append(f"{count} {singular if count == 1 else plural}")
+        if context_parts:
+            return f"Preparing research context · {', '.join(context_parts)}"
+        return "Preparing research context…"
+    if stage == "planning" and activity == "research_plan_ready":
+        breadth = _progress_integer(data.get("breadth"))
+        depth = _progress_integer(data.get("depth"))
+        details: list[str] = []
+        if breadth:
+            details.append(f"{breadth} searches in the initial batch")
+        if depth is not None and depth > 1:
+            details.append("follow-up searches enabled")
+        return "Research plan ready" + (f" · {' · '.join(details)}" if details else "")
+    if stage == "planning":
+        return "Planning research questions and sources…"
+    if stage == "writing":
+        return "Writing the report from gathered evidence…"
+    if stage == "finalizing":
+        return "Creating report and source artifacts…"
+
+    if activity == "pages_read":
+        page_reads = _progress_integer(data.get("page_reads"))
+        if page_reads is not None:
+            return f"Reading sources · {page_reads} successful page reads completed"
+    if activity == "extracting_evidence":
+        return "Extracting relevant evidence from retrieved pages…"
+    if activity == "mcp_results":
+        result_count = _progress_integer(data.get("result_count"))
+        if result_count is not None:
+            return f"Connected knowledge tools returned {result_count} results for the latest query"
+    if activity == "evidence_gathering_complete":
+        visited_urls = _progress_integer(data.get("visited_urls"))
+        if visited_urls is not None:
+            return f"Evidence gathering complete · {visited_urls} distinct web source URLs visited"
+        return "Evidence gathering complete"
+
+    description = (
+        "Researching follow-up sources"
+        if data.get("batch_kind") == "follow_up"
+        else "Researching sources"
+    )
+    completed = _progress_integer(data.get("completed_queries"))
+    total = _progress_integer(data.get("total_queries"))
+    if completed is not None and total is not None and total > 0:
+        description = f"{description} · {completed} of {total} searches complete in this batch"
     current = data.get("current_query")
     if isinstance(current, str) and current.strip():
-        description = f"{description.rstrip('…')} — {current.strip()[:160]}…"
-    completed = data.get("completed_queries")
-    total = data.get("total_queries")
-    if isinstance(completed, int) and isinstance(total, int) and total > 0:
-        description = f"{description} ({completed}/{total} research queries complete)"
+        query = " ".join(current.split())
+        suffix = "…" if len(query) > 120 else ""
+        description = f"{description} · Latest search started: {query[:120]}{suffix}"
     return description
+
+
+def _progress_integer(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 async def _publish_progress(

@@ -27,7 +27,7 @@ def settings(tmp_path: Path) -> Settings:
         default_model_profiles={"default": "test-model"},
         hard_max_input_tokens=300_000,
         hard_max_output_tokens=64_000,
-        hard_max_searches=100,
+        hard_max_queries=100,
     )
 
 
@@ -57,10 +57,16 @@ def job_payload() -> dict[str, object]:
         "chat_id": "chat-1",
         "message_id": "message-1",
         "sources": [],
+        "research": {
+            "strategy": "focused",
+            "breadth": 1,
+            "depth": 1,
+            "queries_per_branch": 2,
+        },
         "budget": {
             "max_input_tokens": 10_000,
             "max_output_tokens": 2_000,
-            "max_searches": 5,
+            "max_queries": 5,
             "max_wall_time_seconds": 300,
         },
         "models": {"fast": "test-model", "smart": "test-model", "strategic": "test-model"},

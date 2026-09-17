@@ -8,11 +8,20 @@ import pytest
 from pydantic import ValidationError
 
 from open_webui_gpt_researcher.config import Settings
-from open_webui_gpt_researcher.domain import CreateJobRequest, ResearchBudget, RunnerJobSpec
+from open_webui_gpt_researcher.domain import (
+    CreateJobRequest,
+    ResearchBudget,
+    ResearchShape,
+    RunnerJobSpec,
+)
 from open_webui_gpt_researcher.engines import (
+    REPORT_LANGUAGE_POLICY,
     GatewaySearxRetriever,
     GPTResearcherEngine,
+    GPTResearcherTelemetry,
     OpenWebUIRetriever,
+    ProgressEmitter,
+    ResearchBatchTracker,
     bound_scraped_results,
     continuation_query,
     deduplicate_sources,
@@ -41,14 +50,50 @@ def test_sources_must_be_unique() -> None:
 
 
 def test_settings_validate_budget_and_default_profile() -> None:
-    settings = Settings(default_model_profiles={"small": "model-id"}, hard_max_searches=100)
+    settings = Settings(default_model_profiles={"small": "model-id"}, hard_max_queries=100)
     assert settings.resolve_default_models("small").smart == "model-id"
     with pytest.raises(ValueError, match="unknown default model profile"):
         settings.resolve_default_models("missing")
-    with pytest.raises(ValueError, match="max_searches"):
-        settings.validate_budget(ResearchBudget(max_searches=101))
-    with pytest.raises(ValueError, match="at least 4"):
-        settings.validate_budget(ResearchBudget(max_searches=3))
+    with pytest.raises(ValueError, match="max_queries"):
+        settings.validate_budget(ResearchBudget(max_queries=101))
+
+
+@pytest.mark.parametrize(
+    ("strategy", "breadth", "depth", "queries_per_branch", "workers", "queries"),
+    [
+        ("focused", 1, 1, 2, 1, 5),
+        ("balanced", 2, 2, 2, 6, 25),
+        ("broad", 4, 2, 2, 12, 49),
+        ("deep", 2, 3, 3, 14, 71),
+        ("custom", 3, 3, 1, 21, 64),
+    ],
+)
+def test_research_shape_estimates_upstream_query_fanout(
+    strategy: str,
+    breadth: int,
+    depth: int,
+    queries_per_branch: int,
+    workers: int,
+    queries: int,
+) -> None:
+    shape = ResearchShape(
+        strategy=strategy,
+        breadth=breadth,
+        depth=depth,
+        queries_per_branch=queries_per_branch,
+    )
+    assert shape.total_workers == workers
+    assert shape.estimated_max_queries == queries
+
+
+def test_research_shape_and_query_budget_are_validated_together() -> None:
+    settings = Settings(hard_max_queries=100)
+    deep = ResearchShape(strategy="deep", breadth=2, depth=3, queries_per_branch=3)
+    settings.validate_research_shape(deep, ResearchBudget(max_queries=71))
+    with pytest.raises(ValueError, match="may require up to 71"):
+        settings.validate_research_shape(deep, ResearchBudget(max_queries=70))
+    with pytest.raises(ValidationError, match="balanced research must use"):
+        ResearchShape(strategy="balanced", breadth=1, depth=1, queries_per_branch=1)
 
 
 def test_settings_resolve_role_specific_model_profile() -> None:
@@ -81,7 +126,10 @@ def test_continuation_query_and_source_deduplication() -> None:
         report_type="deep",
         report_formats=["markdown"],
     )
-    assert "Changes since previous iteration" in continuation_query(spec)
+    continued = continuation_query(spec)
+    assert "Changes since previous iteration" in continued
+    assert "<current_user_research_request>\nExpand the analysis" in continued
+    assert "<integration_instructions>" in continued
     report = ensure_iteration_summary("# Revised report", spec)
     assert report.startswith("## Changes since previous iteration")
     assert "Expand the analysis" in report
@@ -110,6 +158,7 @@ async def test_gpt_researcher_adapter_merges_private_context(
     class FakeGPTResearcher:
         def __init__(self, **kwargs: object) -> None:
             self.kwargs = kwargs
+            self.cfg = SimpleNamespace(language="english")
             self.retrievers: list[object] = []
             instances.append(self)
 
@@ -161,6 +210,11 @@ async def test_gpt_researcher_adapter_merges_private_context(
     }
     assert instances[0].retrievers[0] is GatewaySearxRetriever  # type: ignore[union-attr]
     assert OpenWebUIRetriever in instances[0].retrievers  # type: ignore[union-attr]
+    assert instances[0].cfg.language == REPORT_LANGUAGE_POLICY  # type: ignore[union-attr]
+    assert instances[0].kwargs["query"] == (  # type: ignore[union-attr]
+        "<current_user_research_request>\nResearch with private context\n"
+        "</current_user_research_request>"
+    )
 
 
 async def test_gpt_researcher_can_use_only_openwebui_sources(
@@ -170,6 +224,7 @@ async def test_gpt_researcher_can_use_only_openwebui_sources(
 
     class FakeGPTResearcher:
         def __init__(self, **kwargs: object) -> None:
+            self.cfg = SimpleNamespace(language="english")
             self.retrievers: list[object] = ["public-retriever"]
             instances.append(self)
 
@@ -216,6 +271,7 @@ async def test_empty_upstream_report_is_a_failure(monkeypatch: pytest.MonkeyPatc
     class FakeGPTResearcher:
         def __init__(self, **kwargs: object) -> None:
             del kwargs
+            self.cfg = SimpleNamespace(language="english")
             self.retrievers: list[object] = []
 
         async def conduct_research(self, on_progress: object) -> list[str]:
@@ -258,6 +314,7 @@ async def test_private_only_research_requires_an_openwebui_source(
 ) -> None:
     class FakeGPTResearcher:
         def __init__(self, **kwargs: object) -> None:
+            self.cfg = SimpleNamespace(language="english")
             self.retrievers: list[object] = ["public-retriever"]
 
     monkeypatch.setitem(
@@ -384,6 +441,65 @@ def test_upstream_progress_object_is_serialized_as_useful_json() -> None:
         "completed_queries": 3,
         "current_query": "reliable sources",
     }
+
+
+def test_recursive_progress_objects_are_labeled_as_batches() -> None:
+    tracker = ResearchBatchTracker()
+    initial = SimpleNamespace(total_queries=2, completed_queries=0)
+    follow_up = SimpleNamespace(total_queries=2, completed_queries=1)
+
+    assert tracker.normalize(initial)["batch_kind"] == "initial"
+    assert tracker.normalize(initial)["batch_number"] == 1
+    assert tracker.normalize(follow_up)["batch_kind"] == "follow_up"
+    assert tracker.normalize(follow_up)["batch_number"] == 2
+
+
+async def test_filtered_upstream_telemetry_is_aggregated_and_deduplicated() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def progress(event_type: str, data: dict[str, object]) -> None:
+        events.append((event_type, data))
+
+    emitter = ProgressEmitter(progress)
+    telemetry = GPTResearcherTelemetry(emitter)
+    await telemetry.on_research_step(
+        "deep_research_initialize", {"breadth": 2, "depth": 3, "concurrency": 2}
+    )
+    await telemetry.send_json(
+        {"type": "logs", "step": "scraping_content", "content": "Scraped 3 pages"}
+    )
+    await telemetry.send_json(
+        {"type": "logs", "step": "scraping_content", "content": "Scraped 2 pages"}
+    )
+    await telemetry.send_json(
+        {"type": "report", "step": "writing_report", "content": "partial report"}
+    )
+    await telemetry.send_json(
+        {"type": "logs", "step": "fetching_query_content", "content": "query"}
+    )
+    await telemetry.send_json(
+        {"type": "logs", "step": "fetching_query_content", "content": "same stage"}
+    )
+    await telemetry.on_research_step(
+        "deep_research_complete", {"visited_urls": 4, "context_length": 10}
+    )
+
+    assert [data for _, data in events] == [
+        {
+            "stage": "planning",
+            "activity": "research_plan_ready",
+            "breadth": 2,
+            "depth": 3,
+        },
+        {"stage": "researching", "activity": "pages_read", "page_reads": 3},
+        {"stage": "researching", "activity": "pages_read", "page_reads": 5},
+        {"stage": "researching", "activity": "extracting_evidence"},
+        {
+            "stage": "researching",
+            "activity": "evidence_gathering_complete",
+            "visited_urls": 4,
+        },
+    ]
 
 
 def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> None:

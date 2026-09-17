@@ -57,6 +57,7 @@ class ResearchJob(Base):
         ForeignKey("research_jobs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     iteration: Mapped[int] = mapped_column(Integer, default=1)
+    research: Mapped[dict[str, Any]] = mapped_column(JSON)
     budget: Mapped[dict[str, Any]] = mapped_column(JSON)
     models: Mapped[dict[str, Any]] = mapped_column(JSON)
     model_capabilities: Mapped[list[dict[str, Any]]] = mapped_column(JSON)

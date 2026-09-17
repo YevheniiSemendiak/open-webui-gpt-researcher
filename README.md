@@ -10,7 +10,8 @@ Asynchronous, multi-user deep research for
 - Each run uses the initiating user's Open WebUI model catalog. The user selects the fast, smart,
   and strategic roles before approval, and the selected IDs and Open WebUI-published limits are
   frozen with the job.
-- A Pipe submits research; an Action explicitly saves a completed report to Knowledge.
+- A Pipe submits research and automatically attaches completed artifacts to its response; an
+  Action explicitly saves the report to Knowledge.
 - GPT Researcher runs behind a durable gateway. Its MCP server is not the control plane.
 - `local` mode embeds dispatch and starts real runner subprocesses; `k8s` mode uses elected
   controllers and one literal `batch/v1 Job` per research run. There is no mock engine.
@@ -20,6 +21,8 @@ Asynchronous, multi-user deep research for
   search may be disabled when the job has an attachment or Knowledge source.
 - Public searches pass through the gateway for atomic per-job accounting. Untrusted snippets and
   pages are bounded before they enter model prompts.
+- Research shape and resource limits are separate: users choose a focused, balanced, broad, deep,
+  or custom tree, while `max_queries` remains an administrator-bounded safety ceiling.
 - The gateway reserves a conservative input-token estimate before a model call, reconciles it with
   provider-reported usage, and terminates impossible jobs with the actual budget reason.
 - Only the gateway holds the Open WebUI integration account API key. A runner receives a random,
@@ -27,6 +30,8 @@ Asynchronous, multi-user deep research for
 - Function sync is targeted and idempotent. It does not replace unrelated Functions or interrupt
   an already accepted run.
 - Reports are saved to Knowledge only when the user explicitly invokes the Action.
+- Final reports follow an explicitly requested language, otherwise the language of the latest
+  research request. Integration-generated continuation instructions do not influence that choice.
 - A chat is a research thread: later requests inherit its prior messages, files, Knowledge, and
   reports. A new chat starts a new thread; natively referenced chats become read-only context.
 - Continuation reports deduplicate source identities and always expose a **Changes since previous
@@ -61,10 +66,15 @@ through Open WebUI retrieval, so attachments and Knowledge participate throughou
 coupling this service to Open WebUI's selected vector-store implementation.
 
 The Pipe keeps Open WebUI's normal streamed completion open while the durable job runs, emitting
-application-level keepalives and UI status events. The final report therefore passes through Open
-WebUI's own completion persistence rather than relying on a public researcher URL or on an
-out-of-band rewrite of another user's message. The job itself remains durable if the browser
-disconnects; its event and artifact records are not tied to the browser connection.
+application-level keepalives and UI status events. Progress reports stable lifecycle phases,
+per-batch search completion, the latest search started, successful page reads, connected-tool
+results, and final distinct web-URL counts. Vendor-specific GPT Researcher telemetry is filtered,
+aggregated, and deduplicated before it becomes a durable event; raw logs and partial report output
+are not exposed. The final report therefore passes through Open WebUI's own completion persistence
+rather than relying on a public researcher URL or on an out-of-band rewrite of another user's
+message. On success, the Pipe uploads every generated artifact with the initiating user's
+authorization and emits native Open WebUI file attachments. The job itself remains durable if the
+browser disconnects; its event and artifact records are not tied to the browser connection.
 
 ## Local installation
 
@@ -236,13 +246,14 @@ preserved. If API-key route restrictions are enabled, allow Function and model m
 chat-completion, embedding, retrieval, chat-event, file, and Knowledge routes used by the
 integration.
 
-The research gateway remains cluster-internal. Completed artifacts stay in the configured artifact
-store until the user selects **Attach research files**. The action downloads them over the private
-network and uploads them to Open WebUI with the current user's authorization, so Open WebUI renders
-native file cards and enforces normal ownership. **Save report to Knowledge** is a separate explicit
-action and creates or updates Knowledge as the current user. No public researcher ingress is
-required for either operation. `env.ARTIFACT_BASE_URL` is retained only for direct API clients that
-explicitly want signed artifact URLs; chat rendering does not use those URLs.
+The research gateway remains cluster-internal. At successful completion, the Pipe downloads all
+artifacts over the private network and uploads them to Open WebUI with the initiating user's
+authorization, so Open WebUI renders native file cards and enforces normal ownership. **Attach
+research files** remains available only as an idempotent recovery action for historical messages or
+an interrupted attachment transfer; normal completion requires no click. **Save report to
+Knowledge** remains a separate explicit action and creates or updates Knowledge as the current user.
+No public researcher ingress is required. `env.ARTIFACT_BASE_URL` is retained only for direct API
+clients that explicitly want signed artifact URLs; chat rendering does not use those URLs.
 
 ### Iterative and linked-chat research
 
@@ -264,16 +275,44 @@ timeouts from firing.
 
 ## Budgets and recovery
 
-Users refine input-token, output-token, search, and wall-time budgets through Function Valves;
+Users select a research strategy through their Function User Valves:
+
+| Strategy | Breadth | Depth | Queries per branch | Estimated maximum queries |
+| --- | ---: | ---: | ---: | ---: |
+| `focused` | 1 | 1 | 2 | 5 |
+| `balanced` | 2 | 2 | 2 | 25 |
+| `broad` | 4 | 2 | 2 | 49 |
+| `deep` | 2 | 3 | 3 | 71 |
+| `custom` | user value | user value | user value | calculated at submission |
+
+For `custom`, `breadth`, `depth`, and `queries_per_branch` are exposed directly. Breadth controls
+parallel research directions, depth controls recursive follow-up levels, and queries per branch
+maps to GPT Researcher's `MAX_ITERATIONS`. The Pipe displays the resolved shape and estimated
+maximum before approval. Every job freezes that shape, so later Valve changes do not affect a
+running job.
+
+`max_queries` is independent of the shape: it is a hard search-query budget, not a request for more
+research. The Pipe rejects a shape whose estimate exceeds the user's budget and rejects a user
+budget above its administrator-controlled `max_queries_cap`. Function sync sets that cap from the
+service's `HARD_MAX_QUERIES`, and the API validates it again. The estimate follows GPT Researcher's
+current tapered tree and per-worker planning behavior; actual use can be lower when a branch ends
+early. One query may return and scrape multiple URLs.
+
+Users also refine input-token, output-token, and wall-time budgets through Function Valves;
 administrator hard caps validate those values at submission. Input estimation is intentionally
-model-agnostic and conservative because Open WebUI may route many tokenizer families. Actual
+model-agnostic and conservative because Open WebUI may route many tokenizer families. Actual token
 accounting uses the provider's reported usage.
 
 State and ordered events are durable in PostgreSQL. Expiring dispatch leases recover controller
-crashes. Scheduled cleanup removes expired events, artifacts, jobs, and orphaned objects. Runtime
-settings use direct uppercase names such as `DATABASE_URL`, `DEFAULT_MODEL_PROFILES`, `SEARX_URL`,
-`JOB_ID`, and `RUNNER_TOKEN`. The Helm chart exposes these non-secret settings directly under
-`env:`; credentials remain Kubernetes Secret references.
+crashes before a runner starts. Active runners send durable heartbeats; if a heartbeat expires, the
+controller stops any remaining executor, retries the job from scratch up to `RUNNER_MAX_ATTEMPTS`,
+and then fails it explicitly. `RUNNER_HEARTBEAT_SECONDS` defaults to 10 and
+`RUNNER_STALE_SECONDS` defaults to 60. Token and query usage remains cumulative across retries, so
+recovery cannot bypass the user's original budget.
+Scheduled cleanup removes expired events, artifacts, jobs, and orphaned objects. Runtime settings
+use direct uppercase names such as `DATABASE_URL`, `DEFAULT_MODEL_PROFILES`, `SEARX_URL`, `JOB_ID`,
+and `RUNNER_TOKEN`. The Helm chart exposes these non-secret settings directly under `env:`;
+credentials remain Kubernetes Secret references.
 
 ## Development
 

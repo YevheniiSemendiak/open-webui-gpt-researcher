@@ -47,6 +47,10 @@ def request_digest(request: CreateJobRequest) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 @dataclass(frozen=True)
 class ClaimedJob:
     id: UUID
@@ -59,6 +63,14 @@ class ExpiredDispatch:
     id: UUID
     attempt: int
     state: JobState
+
+
+@dataclass(frozen=True)
+class StaleRunner:
+    id: UUID
+    attempt: int
+    state: JobState
+    updated_at: datetime
 
 
 class JobRepository:
@@ -108,6 +120,7 @@ class JobRepository:
             ],
             parent_job_id=parent.id if parent is not None else None,
             iteration=(parent.iteration + 1) if parent is not None else 1,
+            research=request.research.model_dump(mode="json"),
             budget=request.budget.model_dump(mode="json"),
             models=request.models.model_dump(mode="json"),
             model_capabilities=[
@@ -305,6 +318,92 @@ class JobRepository:
         await self._append_event_locked(session, job, event_type, data)
         return True
 
+    async def list_stale_runners(
+        self, session: AsyncSession, *, stale_seconds: int, limit: int
+    ) -> list[StaleRunner]:
+        cutoff = datetime.now(UTC) - timedelta(seconds=stale_seconds)
+        jobs = (
+            await session.scalars(
+                select(ResearchJob)
+                .where(
+                    ResearchJob.state.in_(
+                        [JobState.RUNNING.value, JobState.CANCEL_REQUESTED.value]
+                    ),
+                    ResearchJob.started_at.is_not(None),
+                    ResearchJob.updated_at <= cutoff,
+                )
+                .order_by(ResearchJob.updated_at)
+                .limit(limit)
+            )
+        ).all()
+        return [
+            StaleRunner(
+                id=UUID(job.id),
+                attempt=job.attempt,
+                state=JobState(job.state),
+                updated_at=job.updated_at,
+            )
+            for job in jobs
+        ]
+
+    async def reconcile_stale_runner(
+        self,
+        session: AsyncSession,
+        *,
+        runner: StaleRunner,
+        action: Literal["refresh", "retry", "fail", "cancel"],
+        error: str = "",
+    ) -> bool:
+        job = await session.scalar(
+            select(ResearchJob)
+            .where(
+                ResearchJob.id == str(runner.id),
+                ResearchJob.attempt == runner.attempt,
+                ResearchJob.state.in_([JobState.RUNNING.value, JobState.CANCEL_REQUESTED.value]),
+                ResearchJob.updated_at <= runner.updated_at,
+            )
+            .with_for_update()
+        )
+        if job is None:
+            return False
+
+        now = datetime.now(UTC)
+        if action == "refresh":
+            job.updated_at = now
+            return True
+
+        if action == "cancel" or job.state == JobState.CANCEL_REQUESTED.value:
+            job.state = JobState.CANCELLED.value
+            job.finished_at = now
+            event_type = "job.cancelled"
+            data: dict[str, object] = {"reason": "stale runner reconciliation"}
+        elif action == "retry":
+            wall_time = int(job.budget["max_wall_time_seconds"])
+            if now >= as_utc(job.created_at) + timedelta(seconds=wall_time):
+                job.state = JobState.FAILED.value
+                job.error = "wall-time budget exhausted before runner recovery"
+                job.finished_at = now
+                event_type = "job.failed"
+                data = {"error": job.error}
+            else:
+                job.state = JobState.PENDING.value
+                job.runner_token_hash = None
+                job.started_at = None
+                job.finished_at = None
+                job.error = None
+                event_type = "job.runner_requeued"
+                data = {"attempt": job.attempt, "reason": error or "runner disappeared"}
+        else:
+            job.state = JobState.FAILED.value
+            job.error = error[:20_000] or "runner stopped sending heartbeats"
+            job.finished_at = now
+            event_type = "job.failed"
+            data = {"error": job.error}
+        job.dispatch_lease_expires_at = None
+        job.updated_at = now
+        await self._append_event_locked(session, job, event_type, data)
+        return True
+
     async def list_events(
         self,
         session: AsyncSession,
@@ -339,7 +438,17 @@ class JobRepository:
         job = await self.get_for_runner(session, job_id=job_id, runner_token=runner_token)
         if JobState(job.state) in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
             raise InvalidStateError("cannot append to a terminal job")
+        job.updated_at = datetime.now(UTC)
         return await self._append_event_locked(session, job, event_type, data)
+
+    async def heartbeat(
+        self, session: AsyncSession, *, job_id: UUID, runner_token: str
+    ) -> ResearchJob:
+        job = await self.get_for_runner_locked(session, job_id=job_id, runner_token=runner_token)
+        if JobState(job.state) not in {JobState.RUNNING, JobState.CANCEL_REQUESTED}:
+            raise InvalidStateError(f"cannot heartbeat job in state {job.state}")
+        job.updated_at = datetime.now(UTC)
+        return job
 
     async def mark_started(
         self, session: AsyncSession, *, job_id: UUID, runner_token: str
@@ -471,6 +580,7 @@ class JobRepository:
         usage["output_tokens"] = max(0, int(usage.get("output_tokens", 0)) + output_tokens)
         usage["searches"] = max(0, int(usage.get("searches", 0)) + searches)
         job.usage = usage
+        job.updated_at = datetime.now(UTC)
         await session.flush()
         return {key: int(value) for key, value in usage.items()}
 
@@ -595,6 +705,7 @@ def to_job_view(job: ResearchJob) -> JobView:
         parent_job_id=UUID(job.parent_job_id) if job.parent_job_id else None,
         iteration=job.iteration,
         context_document_count=len(job.context_documents or []),
+        research=job.research,
         budget=job.budget,
         models=job.models,
         model_capabilities=job.model_capabilities,
@@ -618,6 +729,15 @@ def to_event_view(event: ResearchEvent) -> JobEventView:
 
 
 def to_runner_spec(job: ResearchJob) -> RunnerJobSpec:
+    wall_time = int(job.budget["max_wall_time_seconds"])
+    remaining_wall_time = max(
+        1,
+        int(
+            (
+                as_utc(job.created_at) + timedelta(seconds=wall_time) - datetime.now(UTC)
+            ).total_seconds()
+        ),
+    )
     return RunnerJobSpec(
         id=UUID(job.id),
         query=job.query,
@@ -627,7 +747,9 @@ def to_runner_spec(job: ResearchJob) -> RunnerJobSpec:
         ],
         parent_job_id=UUID(job.parent_job_id) if job.parent_job_id else None,
         iteration=job.iteration,
+        research=job.research,
         budget=job.budget,
+        remaining_wall_time_seconds=remaining_wall_time,
         models=job.models,
         model_capabilities=job.model_capabilities,
         report_type=job.report_type,

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 from openwebui_functions.deep_research_pipe import Pipe
 from openwebui_functions.save_research_to_knowledge import Action
 
@@ -31,7 +32,7 @@ def test_artifact_action_exposes_named_subactions() -> None:
 
 def test_pipe_extracts_question_sources_and_user_budget() -> None:
     pipe = Pipe()
-    pipe.valves.default_searches = 20
+    pipe.valves.default_max_queries = 30
     query = pipe._last_user_message({"messages": [{"role": "user", "content": "Investigate this"}]})
     assert query == "Investigate this"
     sources = pipe._sources(
@@ -45,9 +46,58 @@ def test_pipe_extracts_question_sources_and_user_budget() -> None:
         {"kind": "collection", "id": "kb-1", "name": "Knowledge"},
         {"kind": "file", "id": "file-1", "name": "data.pdf"},
     ]
-    budget = pipe._budget({"max_searches": 7})
-    assert budget["max_searches"] == 7
+    research = pipe._research_shape({"research_strategy": "focused"})
+    budget = pipe._budget({"max_queries": 7}, research=research)
+    assert budget["max_queries"] == 7
     assert budget["max_output_tokens"] == pipe.valves.default_output_tokens
+
+
+def test_pipe_resolves_presets_custom_shape_and_query_caps() -> None:
+    pipe = Pipe()
+    expected = {
+        "focused": (1, 1, 2, 5),
+        "balanced": (2, 2, 2, 25),
+        "broad": (4, 2, 2, 49),
+        "deep": (2, 3, 3, 71),
+    }
+    for strategy, values in expected.items():
+        shape = pipe._research_shape({"research_strategy": strategy})
+        assert (
+            shape["breadth"],
+            shape["depth"],
+            shape["queries_per_branch"],
+            pipe._estimated_max_queries(shape),
+        ) == values
+
+    custom = pipe._research_shape(
+        {
+            "research_strategy": "custom",
+            "breadth": 3,
+            "depth": 3,
+            "queries_per_branch": 1,
+        }
+    )
+    assert pipe._estimated_max_queries(custom) == 64
+    assert pipe._budget({"max_queries": 64}, research=custom)["max_queries"] == 64
+
+    with pytest.raises(ValueError, match="administrator cap"):
+        pipe._budget({"max_queries": 101}, research=custom)
+    with pytest.raises(ValueError, match="may require up to 64"):
+        pipe._budget({"max_queries": 63}, research=custom)
+
+
+def test_research_strategy_schema_is_a_picker_and_unset_value_inherits_admin_default() -> None:
+    pipe = Pipe()
+    schema = pipe.UserValves.model_json_schema()["properties"]["research_strategy"]
+
+    assert schema["enum"] == ["focused", "balanced", "broad", "deep", "custom"]
+    assert schema["default"] == "balanced"
+
+    pipe.valves.default_research_strategy = "focused"
+    assert pipe._research_shape(pipe.UserValves())["strategy"] == "focused"
+    assert pipe._research_shape(pipe.UserValves(research_strategy="balanced"))["strategy"] == (
+        "balanced"
+    )
 
 
 async def test_pipe_requires_a_private_source_when_public_search_is_disabled(
@@ -98,8 +148,33 @@ async def test_pipe_reports_starting_instead_of_remaining_queued(monkeypatch: An
             return httpx.Response(202, json={"id": "job-1"})
         if request.url.path == "/v1/research-jobs/job-1":
             return httpx.Response(200, json={"id": "job-1", "state": "succeeded"})
+        if request.url.path == "/v1/research-jobs/job-1/artifacts":
+            return httpx.Response(
+                200,
+                json=[{"name": "report.md", "media_type": "text/markdown", "size": 17}],
+            )
         if request.url.path == "/v1/research-jobs/job-1/artifacts/report.md/content":
-            return httpx.Response(200, text="# Finished report")
+            return httpx.Response(
+                200, text="# Finished report", headers={"content-type": "text/markdown"}
+            )
+        if request.url.path == "/api/v1/files/":
+            assert request.headers["authorization"] == "Bearer user-token"
+            assert request.url.params["process"] == "false"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "file-report",
+                    "filename": "report.md",
+                    "meta": {
+                        "name": "report.md",
+                        "size": 17,
+                        "content_type": "text/markdown",
+                    },
+                },
+            )
+        if request.url.path == "/api/v1/files/file-report/data/content/update":
+            assert json.loads(request.read()) == {"content": "# Finished report"}
+            return httpx.Response(200, json={"content": "updated"})
         raise AssertionError(request.url)
 
     original_client = httpx.AsyncClient
@@ -121,10 +196,32 @@ async def test_pipe_reports_starting_instead_of_remaining_queued(monkeypatch: An
         __request__=SimpleNamespace(headers={"authorization": "Bearer user-token"}),
     )
     rendered = await collect_pipe_result(result)
-    descriptions = [str(event["data"]["description"]) for event in statuses]  # type: ignore[index]
+    descriptions = [
+        str(event["data"]["description"])  # type: ignore[index]
+        for event in statuses
+        if event["type"] == "status"
+    ]
     assert descriptions == [
         "Starting deep research…",
         "Deep research complete",
+    ]
+    attachments = [event for event in statuses if event["type"] == "files"]
+    assert attachments == [
+        {
+            "type": "files",
+            "data": {
+                "files": [
+                    {
+                        "type": "file",
+                        "id": "file-report",
+                        "url": "file-report",
+                        "name": "report.md",
+                        "size": 17,
+                        "content_type": "text/markdown",
+                    }
+                ]
+            },
+        }
     ]
     assert "job `job-1`" in rendered
     assert rendered.endswith("# Finished report")
@@ -250,6 +347,13 @@ async def test_pipe_collects_current_and_linked_chat_context(monkeypatch: Any) -
         "smart": "gpt-4.1",
         "strategic": "gpt-4.1",
     }
+    assert submitted["research"] == {
+        "strategy": "balanced",
+        "breadth": 2,
+        "depth": 2,
+        "queries_per_branch": 2,
+    }
+    assert submitted["budget"]["max_queries"] == 100
     assert submitted["model_capabilities"] == [
         {"id": "gpt-4.1-mini", "context_length": 128_000, "max_output_tokens": 32_000},
         {"id": "gpt-4.1", "context_length": 1_000_000, "max_output_tokens": 32_000},
@@ -400,9 +504,7 @@ async def test_pipe_reprompts_for_invalid_user_model_limits() -> None:
             },
         }
 
-    result = await pipe._select_models(
-        [{"id": "unknown-limits"}], event_call=choose_and_configure
-    )
+    result = await pipe._select_models([{"id": "unknown-limits"}], event_call=choose_and_configure)
 
     assert result == (
         {

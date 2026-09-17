@@ -12,11 +12,18 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, Field
+
+RESEARCH_PRESETS: dict[str, tuple[int, int, int]] = {
+    "focused": (1, 1, 2),
+    "balanced": (2, 2, 2),
+    "broad": (4, 2, 2),
+    "deep": (2, 3, 3),
+}
 
 
 class Pipe:
@@ -28,7 +35,13 @@ class Pipe:
         require_plan_approval: bool = True
         default_input_tokens: int = Field(default=120_000, ge=1_000)
         default_output_tokens: int = Field(default=24_000, ge=1_000)
-        default_searches: int = Field(default=30, ge=1)
+        default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
+        default_max_queries: int = Field(default=100, ge=1)
+        max_queries_cap: int = Field(
+            default=100,
+            ge=1,
+            description="Infrastructure-enforced maximum query budget per research job.",
+        )
         default_wall_time_seconds: int = Field(default=3_600, ge=60)
         default_models: dict[str, str] = Field(
             default_factory=lambda: {
@@ -43,10 +56,56 @@ class Pipe:
         completion_grace_seconds: int = Field(default=300, ge=30, le=3_600)
 
     class UserValves(BaseModel):
-        max_input_tokens: int | None = Field(default=None, ge=1_000)
-        max_output_tokens: int | None = Field(default=None, ge=1_000)
-        max_searches: int | None = Field(default=None, ge=1)
-        max_wall_time_seconds: int | None = Field(default=None, ge=60)
+        research_strategy: Literal["focused", "balanced", "broad", "deep", "custom"] = Field(
+            default="balanced",
+            description=(
+                "**Inherited default: `balanced` in the bundled configuration.** "
+                "Choose Custom to use breadth, depth, and queries per branch."
+            ),
+        )
+        breadth: int = Field(
+            default=2,
+            ge=1,
+            le=8,
+            description="**Custom default: `2`.** Initial parallel research directions.",
+        )
+        depth: int = Field(
+            default=2,
+            ge=1,
+            le=4,
+            description="**Custom default: `2`.** Recursive follow-up levels.",
+        )
+        queries_per_branch: int = Field(
+            default=2,
+            ge=1,
+            le=5,
+            description=(
+                "**Custom default: `2`.** Generated search queries inside every research worker."
+            ),
+        )
+        max_queries: int | None = Field(
+            default=None,
+            ge=1,
+            description=(
+                "**Inherited default: `100` in the bundled configuration.** "
+                "Hard search-query budget, bounded by the administrator cap."
+            ),
+        )
+        max_input_tokens: int | None = Field(
+            default=None,
+            ge=1_000,
+            description="**Inherited default: `120000` in the bundled configuration.**",
+        )
+        max_output_tokens: int | None = Field(
+            default=None,
+            ge=1_000,
+            description="**Inherited default: `24000` in the bundled configuration.**",
+        )
+        max_wall_time_seconds: int | None = Field(
+            default=None,
+            ge=60,
+            description="**Inherited default: `3600` seconds in the bundled configuration.**",
+        )
 
     def __init__(self) -> None:
         self.valves = self.Valves()
@@ -71,7 +130,11 @@ class Pipe:
         if not query:
             return "Please provide a research question."
 
-        budget = self._budget(__user__.get("valves"))
+        try:
+            research = self._research_shape(__user__.get("valves"))
+            budget = self._budget(__user__.get("valves"), research=research)
+        except ValueError as error:
+            return f"Deep Research configuration is invalid: {error}"
         authorization = self._authorization(__request__)
         if authorization is None:
             return "Deep Research requires the initiating user's Open WebUI authorization."
@@ -114,8 +177,12 @@ class Pipe:
                     f"Sources: {source_scope}\n\n"
                     f"Budget: up to {budget['max_input_tokens']:,} input tokens, "
                     f"{budget['max_output_tokens']:,} output tokens, "
-                    f"{budget['max_searches']} searches, "
+                    f"{budget['max_queries']} search queries, "
                     f"and {budget['max_wall_time_seconds'] // 60} minutes.\n\n"
+                    f"Research strategy: {research['strategy']} — breadth "
+                    f"{research['breadth']}, depth {research['depth']}, "
+                    f"{research['queries_per_branch']} queries per branch "
+                    f"(up to {self._estimated_max_queries(research)} planned queries).\n\n"
                     f"Models: fast `{selected_models['fast']}`, "
                     f"smart `{selected_models['smart']}`, and "
                     f"strategic `{selected_models['strategic']}`."
@@ -151,6 +218,7 @@ class Pipe:
                     "message_id": __message_id__,
                     "sources": sources,
                     "context_documents": context_documents,
+                    "research": research,
                     "budget": budget,
                     "models": selected_models,
                     "model_capabilities": model_capabilities,
@@ -186,11 +254,12 @@ class Pipe:
         )
         started = (
             f"Deep research started (job `{job_id}`).{continuation} You can leave this chat; "
-            "the report and artifact actions will appear here when it finishes."
+            "the report and its files will appear here automatically when it finishes."
         )
         return self._stream_job_result(
             job_id=str(job_id),
             user_id=user_id,
+            authorization=authorization,
             started=started,
             max_wait_seconds=budget["max_wall_time_seconds"] + self.valves.completion_grace_seconds,
             event_emitter=__event_emitter__,
@@ -217,9 +286,7 @@ class Pipe:
         return [
             model
             for model in models
-            if isinstance(model, dict)
-            and model.get("id")
-            and model.get("id") != "deep_research"
+            if isinstance(model, dict) and model.get("id") and model.get("id") != "deep_research"
         ]
 
     async def _select_models(
@@ -380,15 +447,21 @@ class Pipe:
                                 "options": [
                                     {
                                         "label": "8192",
-                                        "description": "8K output tokens; verify with your provider",
+                                        "description": (
+                                            "8K output tokens; verify with your provider"
+                                        ),
                                     },
                                     {
                                         "label": "32768",
-                                        "description": "32K output tokens; verify with your provider",
+                                        "description": (
+                                            "32K output tokens; verify with your provider"
+                                        ),
                                     },
                                     {
                                         "label": "65536",
-                                        "description": "64K output tokens; verify with your provider",
+                                        "description": (
+                                            "64K output tokens; verify with your provider"
+                                        ),
                                     },
                                 ],
                                 "allow_other": True,
@@ -443,6 +516,7 @@ class Pipe:
         *,
         job_id: str,
         user_id: str,
+        authorization: str,
         started: str,
         max_wait_seconds: int,
         event_emitter: Any,
@@ -478,12 +552,45 @@ class Pipe:
 
                 state = job.get("state")
                 if state == "succeeded":
+                    attached_files: list[dict[str, Any]] = []
+                    attachment_error: str | None = None
+                    if event_emitter is not None:
+                        try:
+                            attached_files = await self._attach_artifacts(
+                                client,
+                                job_id=job_id,
+                                user_id=user_id,
+                                authorization=authorization,
+                            )
+                        except (
+                            httpx.HTTPError,
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            UnicodeDecodeError,
+                        ) as error:
+                            attachment_error = str(error)
                     report = await client.get(
                         f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/"
                         f"{job_id}/artifacts/report.md/content",
                         headers=headers,
                     )
                     report.raise_for_status()
+                    if attached_files and event_emitter is not None:
+                        await event_emitter({"type": "files", "data": {"files": attached_files}})
+                    if attachment_error and event_emitter is not None:
+                        await event_emitter(
+                            {
+                                "type": "notification",
+                                "data": {
+                                    "type": "warning",
+                                    "content": (
+                                        "The report completed, but its files could not be "
+                                        f"attached automatically: {attachment_error}"
+                                    ),
+                                },
+                            }
+                        )
                     if event_emitter is not None:
                         await event_emitter(
                             {
@@ -515,21 +622,147 @@ class Pipe:
                 yield ""
                 await asyncio.sleep(self.valves.job_poll_interval_seconds)
 
-    def _budget(self, user_valves: Any) -> dict[str, int]:
+    async def _attach_artifacts(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        job_id: str,
+        user_id: str,
+        authorization: str,
+    ) -> list[dict[str, Any]]:
+        service_headers = {
+            "X-Research-Service-Token": self.valves.service_token,
+            "X-OpenWebUI-User-Id": user_id,
+        }
+        response = await client.get(
+            f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/{job_id}/artifacts",
+            headers=service_headers,
+        )
+        response.raise_for_status()
+        manifest = response.json()
+        if not isinstance(manifest, list):
+            raise httpx.HTTPError("Research service returned an invalid artifact manifest")
+
+        uploaded: list[dict[str, Any]] = []
+        for artifact in manifest:
+            if not isinstance(artifact, dict) or not artifact.get("name"):
+                continue
+            name = str(artifact["name"])
+            content_response = await client.get(
+                f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/{job_id}/artifacts/"
+                f"{quote(name, safe='')}/content",
+                headers=service_headers,
+            )
+            content_response.raise_for_status()
+            media_type = content_response.headers.get("content-type", "application/octet-stream")
+            upload = await client.post(
+                f"{self.valves.openwebui_url.rstrip('/')}/api/v1/files/",
+                params={"process": "false"},
+                headers={"Authorization": authorization},
+                files={"file": (name, content_response.content, media_type)},
+                data={"metadata": json.dumps({"deep_research_job_id": job_id})},
+            )
+            upload.raise_for_status()
+            payload = upload.json()
+            file_id = str(payload["id"])
+            if media_type.startswith("text/") or media_type.startswith("application/json"):
+                preview = await client.post(
+                    f"{self.valves.openwebui_url.rstrip('/')}/api/v1/files/"
+                    f"{quote(file_id, safe='')}/data/content/update",
+                    headers={"Authorization": authorization},
+                    json={"content": content_response.content.decode("utf-8")},
+                )
+                preview.raise_for_status()
+            metadata = payload.get("meta") or {}
+            uploaded.append(
+                {
+                    "type": "file",
+                    "id": file_id,
+                    "url": file_id,
+                    "name": str(metadata.get("name") or payload.get("filename") or name),
+                    "size": int(metadata.get("size") or len(content_response.content)),
+                    "content_type": str(metadata.get("content_type") or media_type),
+                }
+            )
+        return uploaded
+
+    def _budget(self, user_valves: Any, *, research: dict[str, Any]) -> dict[str, int]:
         values = user_valves or self.UserValves()
 
         def pick(name: str, default: int) -> int:
             value = values.get(name) if isinstance(values, dict) else getattr(values, name, None)
             return int(value) if value is not None else default
 
+        max_queries = pick("max_queries", self.valves.default_max_queries)
+        if max_queries > self.valves.max_queries_cap:
+            raise ValueError(
+                f"max_queries {max_queries} exceeds the administrator cap "
+                f"{self.valves.max_queries_cap}"
+            )
+        required = self._estimated_max_queries(research)
+        if required > max_queries:
+            raise ValueError(
+                f"{research['strategy']} research may require up to {required} queries, "
+                f"but max_queries is {max_queries}"
+            )
         return {
             "max_input_tokens": pick("max_input_tokens", self.valves.default_input_tokens),
             "max_output_tokens": pick("max_output_tokens", self.valves.default_output_tokens),
-            "max_searches": pick("max_searches", self.valves.default_searches),
+            "max_queries": max_queries,
             "max_wall_time_seconds": pick(
                 "max_wall_time_seconds", self.valves.default_wall_time_seconds
             ),
         }
+
+    def _research_shape(self, user_valves: Any) -> dict[str, int | str]:
+        values = user_valves or self.UserValves()
+
+        def pick(name: str, default: Any) -> Any:
+            if isinstance(values, dict):
+                value = values.get(name)
+            else:
+                # A concrete schema default makes Open WebUI render Literal values as a
+                # selector. An unset field must still inherit the administrator's default.
+                fields_set: set[str] = getattr(values, "model_fields_set", set())
+                if name not in fields_set:
+                    return default
+                value = getattr(values, name, None)
+            return value if value is not None else default
+
+        strategy = str(pick("research_strategy", self.valves.default_research_strategy))
+        if strategy == "custom":
+            breadth = int(pick("breadth", 2))
+            depth = int(pick("depth", 2))
+            queries_per_branch = int(pick("queries_per_branch", 2))
+            if not 1 <= breadth <= 8:
+                raise ValueError("breadth must be between 1 and 8")
+            if not 1 <= depth <= 4:
+                raise ValueError("depth must be between 1 and 4")
+            if not 1 <= queries_per_branch <= 5:
+                raise ValueError("queries_per_branch must be between 1 and 5")
+        else:
+            try:
+                breadth, depth, queries_per_branch = RESEARCH_PRESETS[strategy]
+            except KeyError as error:
+                raise ValueError(f"unknown research_strategy: {strategy}") from error
+        return {
+            "strategy": strategy,
+            "breadth": breadth,
+            "depth": depth,
+            "queries_per_branch": queries_per_branch,
+        }
+
+    @staticmethod
+    def _estimated_max_queries(research: dict[str, Any]) -> int:
+        current_breadth = int(research["breadth"])
+        workers_at_level = current_breadth
+        total_workers = 0
+        for level in range(int(research["depth"])):
+            if level:
+                current_breadth = max(2, current_breadth // 2)
+                workers_at_level *= current_breadth
+            total_workers += workers_at_level
+        return 1 + total_workers * (int(research["queries_per_branch"]) + 2)
 
     @staticmethod
     def _last_user_message(body: dict[str, Any]) -> str:

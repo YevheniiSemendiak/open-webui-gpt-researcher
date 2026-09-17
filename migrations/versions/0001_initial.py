@@ -30,6 +30,7 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column("iteration", sa.Integer(), nullable=False),
+        sa.Column("research", sa.JSON(), nullable=False),
         sa.Column("budget", sa.JSON(), nullable=False),
         sa.Column("models", sa.JSON(), nullable=False),
         sa.Column("model_capabilities", sa.JSON(), nullable=False),

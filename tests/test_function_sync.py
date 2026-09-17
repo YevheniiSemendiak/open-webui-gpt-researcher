@@ -34,7 +34,7 @@ async def test_function_sync_creates_updates_valves_and_activates(tmp_path: Path
         if request.url.path.endswith("/create"):
             return httpx.Response(200, json={"id": "save_deep_research_to_knowledge"})
         if request.url.path.endswith("/valves"):
-            return httpx.Response(200, json={"default_searches": 17})
+            return httpx.Response(200, json={"default_max_queries": 17})
         return httpx.Response(200, json={"is_active": True})
 
     settings = Settings(
@@ -72,7 +72,9 @@ async def test_function_sync_creates_updates_valves_and_activates(tmp_path: Path
         for method, path, body in requests
         if method == "POST" and path.endswith("/deep_research/valves/update")
     )
-    assert deep_valves["default_searches"] == 17
+    assert deep_valves["default_max_queries"] == 100
+    assert deep_valves["max_queries_cap"] == 100
+    assert deep_valves["default_research_strategy"] == "balanced"
     assert deep_valves["service_token"] == "service-token"
     assert deep_valves["default_models"] == {
         "fast": "gpt-4.1-mini",

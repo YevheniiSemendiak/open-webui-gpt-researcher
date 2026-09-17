@@ -61,12 +61,61 @@ class ModelCapability(BaseModel):
     max_output_tokens: int = Field(ge=1)
 
 
+ResearchStrategy = Literal["focused", "balanced", "broad", "deep", "custom"]
+
+RESEARCH_PRESETS: dict[str, tuple[int, int, int]] = {
+    "focused": (1, 1, 2),
+    "balanced": (2, 2, 2),
+    "broad": (4, 2, 2),
+    "deep": (2, 3, 3),
+}
+
+
+class ResearchShape(BaseModel):
+    """Frozen research-tree shape selected for one run."""
+
+    strategy: ResearchStrategy = "balanced"
+    breadth: int = Field(default=2, ge=1, le=8)
+    depth: int = Field(default=2, ge=1, le=4)
+    queries_per_branch: int = Field(default=2, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def validate_preset(self) -> ResearchShape:
+        preset = RESEARCH_PRESETS.get(self.strategy)
+        selected = (self.breadth, self.depth, self.queries_per_branch)
+        if preset is not None and selected != preset:
+            msg = (
+                f"{self.strategy} research must use breadth={preset[0]}, "
+                f"depth={preset[1]}, and queries_per_branch={preset[2]}"
+            )
+            raise ValueError(msg)
+        return self
+
+    @property
+    def total_workers(self) -> int:
+        current_breadth = self.breadth
+        workers_at_level = self.breadth
+        workers = 0
+        for level in range(self.depth):
+            if level:
+                current_breadth = max(2, current_breadth // 2)
+                workers_at_level *= current_breadth
+            workers += workers_at_level
+        return workers
+
+    @property
+    def estimated_max_queries(self) -> int:
+        # Each nested researcher performs one planning query, the generated
+        # queries, and its original query. The root planner adds one query.
+        return 1 + self.total_workers * (self.queries_per_branch + 2)
+
+
 class ResearchBudget(BaseModel):
     """User-visible limits validated against administrator caps."""
 
     max_input_tokens: int = Field(default=120_000, ge=1_000)
     max_output_tokens: int = Field(default=24_000, ge=1_000)
-    max_searches: int = Field(default=30, ge=1)
+    max_queries: int = Field(default=100, ge=1)
     max_wall_time_seconds: int = Field(default=3_600, ge=60)
 
     @property
@@ -82,6 +131,7 @@ class CreateJobRequest(BaseModel):
     message_id: str = Field(min_length=1, max_length=255)
     sources: list[SourceRef] = Field(default_factory=list, max_length=200)
     context_documents: list[ContextDocument] = Field(default_factory=list, max_length=50)
+    research: ResearchShape = Field(default_factory=ResearchShape)
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
     models: ModelRoles
     model_capabilities: list[ModelCapability] = Field(min_length=1, max_length=3)
@@ -127,6 +177,7 @@ class JobView(BaseModel):
     parent_job_id: UUID | None = None
     iteration: int = 1
     context_document_count: int = 0
+    research: ResearchShape = Field(default_factory=ResearchShape)
     budget: ResearchBudget
     models: ModelRoles
     model_capabilities: list[ModelCapability]
@@ -157,7 +208,9 @@ class RunnerJobSpec(BaseModel):
     context_documents: list[ContextDocument] = Field(default_factory=list)
     parent_job_id: UUID | None = None
     iteration: int = 1
+    research: ResearchShape = Field(default_factory=ResearchShape)
     budget: ResearchBudget
+    remaining_wall_time_seconds: int | None = Field(default=None, ge=1)
     models: ModelRoles
     model_capabilities: list[ModelCapability]
     report_type: str

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 from kubernetes_asyncio.client.exceptions import ApiException
@@ -38,6 +38,25 @@ async def test_local_executor_passes_only_job_runtime_values(monkeypatch: Any) -
     assert isinstance(make_executor(settings), LocalProcessExecutor)
 
 
+async def test_local_executor_stops_active_runner(monkeypatch: Any) -> None:
+    process = SimpleNamespace(
+        returncode=None,
+        terminate=Mock(),
+        kill=Mock(),
+        wait=AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=process))
+    executor = LocalProcessExecutor(Settings(internal_base_url="http://api"))
+    job_id = uuid4()
+    await executor.submit(job_id=job_id, runner_token="job-token", attempt=1)
+
+    await executor.stop(job_id=job_id, attempt=1)
+
+    process.terminate.assert_called_once_with()
+    process.kill.assert_not_called()
+    assert await executor.inspect(job_id=job_id, attempt=1) == DispatchStatus.MISSING
+
+
 async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None:
     submitted: dict[str, Any] = {}
 
@@ -49,6 +68,9 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
         async def read_namespaced_job(self, *, name: str, namespace: str) -> Any:
             submitted["read"] = (namespace, name)
             return submitted["job"]
+
+        async def delete_namespaced_job(self, *, name: str, namespace: str, body: Any) -> None:
+            submitted["delete"] = (namespace, name, body.propagation_policy)
 
     class FakeAppsApi:
         async def read_namespaced_deployment(self, *, name: str, namespace: str) -> Any:
@@ -96,6 +118,8 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
     assert await executor.inspect(job_id=job_id, attempt=3) == DispatchStatus.ACTIVE
     job.status = type("Status", (), {"failed": 0, "succeeded": 1})()
     assert await executor.inspect(job_id=job_id, attempt=3) == DispatchStatus.EXITED
+    await executor.stop(job_id=job_id, attempt=3)
+    assert submitted["delete"] == ("research", job.metadata.name, "Background")
     assert container.env_from[0].secret_ref.name == "provider-credentials"
     assert isinstance(make_executor(settings), KubernetesJobExecutor)
 

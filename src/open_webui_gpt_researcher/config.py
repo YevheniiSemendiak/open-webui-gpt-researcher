@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .domain import ModelRoles, ResearchBudget
+from .domain import ModelRoles, ResearchBudget, ResearchShape
 
 
 class Settings(BaseSettings):
@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     controller_leader_retry_seconds: float = Field(default=5.0, ge=0.5)
     dispatch_lease_seconds: int = Field(default=120, ge=10, le=3_600)
     dispatch_reconcile_batch_size: int = Field(default=100, ge=1, le=10_000)
+    runner_heartbeat_seconds: float = Field(default=10.0, ge=1.0, le=300.0)
+    runner_stale_seconds: int = Field(default=60, ge=10, le=3_600)
+    runner_max_attempts: int = Field(default=2, ge=1, le=10)
     max_concurrent_jobs: int = Field(default=5, ge=1, le=100)
     public_search_enabled: bool = True
     retriever: str = "searx"
@@ -66,6 +69,7 @@ class Settings(BaseSettings):
     searx_url: str = "http://searxng:8080"
     model_route: Literal["openwebui", "direct"] = "openwebui"
     default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}
+    default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
     model_context_safety_tokens: int = Field(default=256, ge=0, le=8_192)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -74,7 +78,7 @@ class Settings(BaseSettings):
     default_budget: ResearchBudget = ResearchBudget()
     hard_max_input_tokens: int = Field(default=300_000, ge=1)
     hard_max_output_tokens: int = Field(default=64_000, ge=1)  # 64_000
-    hard_max_searches: int = 500
+    hard_max_queries: int = Field(default=100, ge=1)
     hard_max_wall_time_seconds: int = 7_200
 
     download_token_ttl_seconds: int = Field(default=604_800, ge=60, le=2_592_000)
@@ -90,6 +94,9 @@ class Settings(BaseSettings):
         if self.job_retention_days < self.artifact_retention_days:
             msg = "JOB_RETENTION_DAYS must be greater than or equal to ARTIFACT_RETENTION_DAYS"
             raise ValueError(msg)
+        if self.runner_stale_seconds <= self.runner_heartbeat_seconds * 2:
+            msg = "RUNNER_STALE_SECONDS must exceed twice RUNNER_HEARTBEAT_SECONDS"
+            raise ValueError(msg)
         return self
 
     def validate_api_secrets(self) -> None:
@@ -103,13 +110,10 @@ class Settings(BaseSettings):
 
     def validate_budget(self, budget: ResearchBudget) -> None:
         """Reject user refinements above administrator-defined hard limits."""
-        if self.public_search_enabled and budget.max_searches < 4:
-            msg = "max_searches must be at least 4 when public search is enabled"
-            raise ValueError(msg)
         checks = (
             (budget.max_input_tokens, self.hard_max_input_tokens, "max_input_tokens"),
             (budget.max_output_tokens, self.hard_max_output_tokens, "max_output_tokens"),
-            (budget.max_searches, self.hard_max_searches, "max_searches"),
+            (budget.max_queries, self.hard_max_queries, "max_queries"),
             (
                 budget.max_wall_time_seconds,
                 self.hard_max_wall_time_seconds,
@@ -120,6 +124,16 @@ class Settings(BaseSettings):
             if value > maximum:
                 msg = f"{name} exceeds administrator limit {maximum}"
                 raise ValueError(msg)
+
+    def validate_research_shape(self, research: ResearchShape, budget: ResearchBudget) -> None:
+        """Ensure the requested tree can finish within the query budget."""
+        required = research.estimated_max_queries
+        if required > budget.max_queries:
+            msg = (
+                f"{research.strategy} research may require up to {required} queries, "
+                f"but max_queries is {budget.max_queries}"
+            )
+            raise ValueError(msg)
 
     def resolve_default_models(self, profile: str = "default") -> ModelRoles:
         try:

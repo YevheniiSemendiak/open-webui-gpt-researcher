@@ -15,31 +15,6 @@ from .engines import ResearchEngine
 log = structlog.get_logger()
 
 
-def plan_deep_research(max_searches: int) -> tuple[int, int, int]:
-    """Choose an upstream shape whose worst-case search fan-out fits the budget."""
-    breadth = 2 if max_searches >= 7 else 1
-    if breadth == 2 and max_searches >= 43:
-        depth = 3
-    elif breadth == 2 and max_searches >= 19:
-        depth = 2
-    else:
-        depth = 1
-
-    branches = breadth
-    level_width = breadth
-    level_breadth = breadth
-    for _ in range(1, depth):
-        level_breadth = max(2, level_breadth // 2)
-        level_width *= level_breadth
-        branches += level_width
-
-    # Each nested researcher performs one planning search, MAX_ITERATIONS
-    # generated searches, and one search for its original query. The root
-    # deep-research planner performs one additional search.
-    max_iterations = max(1, min(5, (max_searches - 1) // branches - 2))
-    return breadth, depth, max_iterations
-
-
 class RunnerClient:
     def __init__(self, *, base_url: str, job_id: UUID, token: str) -> None:
         self.job_id = job_id
@@ -60,6 +35,10 @@ class RunnerClient:
 
     async def started(self) -> None:
         response = await self.client.post(f"/internal/jobs/{self.job_id}/started")
+        response.raise_for_status()
+
+    async def heartbeat(self) -> None:
+        response = await self.client.post(f"/internal/jobs/{self.job_id}/heartbeat")
         response.raise_for_status()
 
     async def event(self, event_type: str, data: dict[str, object]) -> None:
@@ -110,7 +89,16 @@ class Runner:
         spec = await self.client.get_spec()
         self._configure_model_gateway(spec)
         await self.client.started()
-        await self._report_progress("research.progress", {"stage": "retrieval"})
+        heartbeat_task = asyncio.create_task(self._heartbeat_forever())
+        await self._report_progress(
+            "research.progress",
+            {
+                "stage": "retrieval",
+                "file_sources": sum(source.kind == "file" for source in spec.sources),
+                "knowledge_sources": sum(source.kind == "collection" for source in spec.sources),
+                "context_items": len(spec.context_documents),
+            },
+        )
         private_context: list[dict[str, object]] = [
             {
                 "text": document.text,
@@ -132,7 +120,7 @@ class Runner:
         try:
             done, _ = await asyncio.wait(
                 {research_task, cancellation_task},
-                timeout=spec.budget.max_wall_time_seconds,
+                timeout=(spec.remaining_wall_time_seconds or spec.budget.max_wall_time_seconds),
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if cancellation_task in done:
@@ -161,9 +149,24 @@ class Runner:
             raise
         finally:
             cancellation_task.cancel()
+            heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
                 await cancellation_task
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
             await self.client.close()
+
+    async def _heartbeat_forever(self) -> None:
+        while True:
+            await asyncio.sleep(self.settings.runner_heartbeat_seconds)
+            try:
+                await self.client.heartbeat()
+            except httpx.HTTPError as error:
+                log.warning(
+                    "runner.heartbeat_failed",
+                    job_id=str(getattr(self.client, "job_id", "unknown")),
+                    error=str(error),
+                )
 
     async def _wait_for_stop(self) -> JobState:
         while True:
@@ -196,12 +199,11 @@ class Runner:
             )
 
     def _configure_model_gateway(self, spec: RunnerJobSpec) -> None:
-        breadth, depth, max_iterations = plan_deep_research(spec.budget.max_searches)
         os.environ.update(
             {
-                "DEEP_RESEARCH_BREADTH": str(breadth),
-                "DEEP_RESEARCH_DEPTH": str(depth),
-                "MAX_ITERATIONS": str(max_iterations),
+                "DEEP_RESEARCH_BREADTH": str(spec.research.breadth),
+                "DEEP_RESEARCH_DEPTH": str(spec.research.depth),
+                "MAX_ITERATIONS": str(spec.research.queries_per_branch),
                 "FAST_TOKEN_LIMIT": str(min(6_000, spec.budget.max_output_tokens)),
                 "SMART_TOKEN_LIMIT": str(min(12_000, spec.budget.max_output_tokens)),
                 "STRATEGIC_TOKEN_LIMIT": str(min(8_000, spec.budget.max_output_tokens)),

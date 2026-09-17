@@ -82,6 +82,9 @@ class FunctionSync:
                 valves["public_search_enabled"] = self.settings.public_search_enabled
                 valves["openwebui_url"] = self.settings.openwebui_url
                 valves["default_models"] = self.settings.resolve_default_models().model_dump()
+                valves["default_research_strategy"] = self.settings.default_research_strategy
+                valves["default_max_queries"] = self.settings.default_budget.max_queries
+                valves["max_queries_cap"] = self.settings.hard_max_queries
             else:
                 valves["openwebui_url"] = self.settings.openwebui_url
             valve_response = await self.client.get(f"/api/v1/functions/id/{source.id}/valves")
