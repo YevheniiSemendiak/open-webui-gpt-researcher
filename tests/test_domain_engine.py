@@ -150,6 +150,18 @@ def test_settings_use_direct_environment_names(monkeypatch: pytest.MonkeyPatch) 
     assert settings.database_url == "sqlite+aiosqlite:///direct.sqlite"
 
 
+def test_settings_validate_optional_crawler_proxy() -> None:
+    assert Settings(crawler_proxy_url="").crawler_proxy_url is None
+    assert (
+        Settings(crawler_proxy_url="socks5://external-proxy:1080").crawler_proxy_url
+        == "socks5://external-proxy:1080"
+    )
+    with pytest.raises(ValidationError, match="must not embed credentials"):
+        Settings(crawler_proxy_url="socks5://user:password@external-proxy:1080")
+    with pytest.raises(ValidationError, match="must be an HTTP"):
+        Settings(crawler_proxy_url="socks5h://external-proxy:1080")
+
+
 async def test_gpt_researcher_adapter_merges_private_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -519,7 +531,7 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
         report_type="deep",
         report_formats=["markdown"],
     )
-    GPTResearcherEngine()._configure_upstream(spec)
+    GPTResearcherEngine(crawler_proxy_url="socks5://external-proxy:1080")._configure_upstream(spec)
 
     assert retrievers.SearxSearch is GatewaySearxRetriever
     assert NoDriverScraper.max_browsers == 1
@@ -528,7 +540,9 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
 
     assert hasattr(DeepResearchSkill, "_owui_original_generate_search_queries")
     assert hasattr(report_generation, "_owui_original_create_chat_completion")
-    assert zendriver.Config(headless=True).sandbox is False
+    browser_config = zendriver.Config(headless=True)
+    assert browser_config.sandbox is False
+    assert "--proxy-server=socks5://external-proxy:1080" in browser_config.browser_args
 
 
 async def test_upstream_report_generation_is_forced_non_streaming(

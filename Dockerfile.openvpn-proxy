@@ -1,0 +1,11 @@
+FROM alpine:3.22.1
+
+RUN apk add --no-cache ca-certificates dante-server iproute2 openvpn tini
+
+COPY dev/openvpn-proxy/entrypoint.sh /usr/local/bin/openvpn-proxy
+COPY dev/openvpn-proxy/healthcheck.sh /usr/local/bin/openvpn-proxy-healthcheck
+COPY dev/openvpn-proxy/sockd.conf /etc/sockd.conf
+
+RUN chmod 0755 /usr/local/bin/openvpn-proxy /usr/local/bin/openvpn-proxy-healthcheck
+
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/openvpn-proxy"]

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .domain import ModelRoles, ResearchBudget, ResearchShape
@@ -43,6 +44,8 @@ class Settings(BaseSettings):
 
     mode: Literal["local", "k8s"] = "local"
     runner_image: str = "ghcr.io/example/open-webui-gpt-researcher:latest"
+    runner_image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = "IfNotPresent"
+    runner_image_pull_secrets: list[dict[str, object]] = Field(default_factory=list)
     runner_namespace: str = "default"
     runner_owner_deployment: str | None = None
     runner_service_account: str = "open-webui-gpt-researcher-runner"
@@ -52,7 +55,31 @@ class Settings(BaseSettings):
     runner_memory_limit: str = "2Gi"
     runner_active_deadline_seconds: int = Field(default=7_200, ge=60)
     runner_ttl_seconds_after_finished: int = Field(default=3_600, ge=0)
-    runner_extra_env_secret: str | None = None
+    runner_backoff_limit: int = Field(default=0, ge=0)
+    runner_env: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    runner_env_from: list[dict[str, object]] = Field(default_factory=list)
+    runner_pod_labels: dict[str, str] = Field(default_factory=dict)
+    runner_pod_annotations: dict[str, str] = Field(default_factory=dict)
+    runner_node_selector: dict[str, str] = Field(default_factory=dict)
+    runner_tolerations: list[dict[str, object]] = Field(default_factory=list)
+    runner_affinity: dict[str, object] = Field(default_factory=dict)
+    runner_pod_security_context: dict[str, object] = Field(
+        default_factory=lambda: {
+            "runAsNonRoot": True,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        }
+    )
+    runner_container_security_context: dict[str, object] = Field(
+        default_factory=lambda: {
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+            "readOnlyRootFilesystem": True,
+            "runAsNonRoot": True,
+            "runAsUser": 10_001,
+        }
+    )
+    runner_extra_volumes: list[dict[str, object]] = Field(default_factory=list)
+    runner_extra_volume_mounts: list[dict[str, object]] = Field(default_factory=list)
 
     controller_poll_seconds: float = Field(default=2.0, ge=0.1)
     controller_leader_lock_id: int = 7_305_809_465_149_768_307
@@ -67,6 +94,7 @@ class Settings(BaseSettings):
     retriever: str = "searx"
     scraper: str = "nodriver"
     searx_url: str = "http://searxng:8080"
+    crawler_proxy_url: str | None = None
     model_route: Literal["openwebui", "direct"] = "openwebui"
     default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}
     default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
@@ -89,6 +117,22 @@ class Settings(BaseSettings):
     orphan_grace_seconds: int = Field(default=86_400, ge=3_600, le=2_592_000)
     cleanup_batch_size: int = Field(default=100, ge=1, le=10_000)
 
+    @field_validator("crawler_proxy_url", mode="before")
+    @classmethod
+    def validate_crawler_proxy_url(cls, value: object) -> object:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            return value
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https", "socks4", "socks5"} or not parsed.hostname:
+            msg = "CRAWLER_PROXY_URL must be an HTTP, HTTPS, SOCKS4, or SOCKS5 URL"
+            raise ValueError(msg)
+        if parsed.username is not None or parsed.password is not None:
+            msg = "CRAWLER_PROXY_URL must not embed credentials"
+            raise ValueError(msg)
+        return value
+
     @model_validator(mode="after")
     def validate_retention_order(self) -> Settings:
         if self.job_retention_days < self.artifact_retention_days:
@@ -97,6 +141,17 @@ class Settings(BaseSettings):
         if self.runner_stale_seconds <= self.runner_heartbeat_seconds * 2:
             msg = "RUNNER_STALE_SECONDS must exceed twice RUNNER_HEARTBEAT_SECONDS"
             raise ValueError(msg)
+        reserved_env = {"JOB_ID", "RUNNER_TOKEN", "INTERNAL_BASE_URL"}
+        if conflict := reserved_env.intersection(self.runner_env):
+            msg = f"RUNNER_ENV cannot override reserved values: {', '.join(sorted(conflict))}"
+            raise ValueError(msg)
+        if any(volume.get("name") == "tmp" for volume in self.runner_extra_volumes):
+            raise ValueError("RUNNER_EXTRA_VOLUMES cannot redefine the tmp volume")
+        if any(
+            mount.get("name") == "tmp" or mount.get("mountPath") == "/tmp"  # noqa: S108
+            for mount in self.runner_extra_volume_mounts
+        ):
+            raise ValueError("RUNNER_EXTRA_VOLUME_MOUNTS cannot redefine the tmp mount")
         return self
 
     def validate_api_secrets(self) -> None:

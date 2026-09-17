@@ -1,4 +1,4 @@
-{{- if .Values.functionSync.enabled }}
+{{- if and .Values.api.enabled .Values.functionSync.enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -15,42 +15,62 @@ spec:
   ttlSecondsAfterFinished: {{ .Values.functionSync.ttlSecondsAfterFinished }}
   template:
     metadata:
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- include "research.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: function-sync
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       restartPolicy: Never
-      serviceAccountName: {{ include "research.runnerServiceAccount" . }}
+      serviceAccountName: {{ include "research.apiServiceAccount" . }}
       automountServiceAccountToken: false
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml .Values.api.podSecurityContext | nindent 8 }}
       imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+        {{- toYaml .Values.api.imagePullSecrets | nindent 8 }}
       containers:
         - name: sync-functions
-          image: {{ include "research.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ printf "%s:%s" .Values.api.image.repository .Values.api.image.tag }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           args: ["sync-functions"]
           securityContext:
-            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
-          envFrom:
-            - configMapRef:
-                name: {{ include "research.fullname" . }}
+            {{- toYaml .Values.api.containerSecurityContext | nindent 12 }}
           env:
-            - name: OPENWEBUI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "research.secretName" . }}
-                  key: openwebui-api-key
+            {{- range $name, $value := .Values.api.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
             - name: INTERNAL_BASE_URL
-              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.service.port | quote }}
-            - name: SERVICE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "research.secretName" . }}
-                  key: service-token
-            - name: FUNCTION_SOURCES_PATH
-              value: /app/openwebui_functions
+              value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.api.service.port | quote }}
+          {{- with .Values.api.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.functionSync.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: artifacts, mountPath: /data/artifacts}
+            {{- with .Values.api.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: artifacts
+          emptyDir: {}
+        {{- with .Values.api.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      nodeSelector:
+        {{- toYaml .Values.api.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.api.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.api.affinity | nindent 8 }}
 {{- end }}

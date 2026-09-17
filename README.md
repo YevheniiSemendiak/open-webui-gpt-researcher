@@ -32,11 +32,13 @@ Asynchronous, multi-user deep research for
 - Reports are saved to Knowledge only when the user explicitly invokes the Action.
 - Final reports follow an explicitly requested language, otherwise the language of the latest
   research request. Integration-generated continuation instructions do not influence that choice.
+- Public search and crawling may independently use an optional externally managed proxy or VPN
+  gateway. This project provides connection hooks but does not manage that infrastructure.
 - A chat is a research thread: later requests inherit its prior messages, files, Knowledge, and
   reports. A new chat starts a new thread; natively referenced chats become read-only context.
 - Continuation reports deduplicate source identities and always expose a **Changes since previous
   iteration** section.
-- Runtime Jobs are owned by the controller Deployment and runner Pods are owned by their Job, so
+- Runtime Jobs are owned by the gateway Deployment and runner Pods are owned by their Job, so
   Argo CD displays Deployment → Job → Pod.
 - GPT Researcher is pinned to an exact source revision because the current PyPI `0.16.0` artifact
   predates its importability fix.
@@ -46,15 +48,18 @@ Asynchronous, multi-user deep research for
 ```mermaid
 flowchart LR
   U["Open WebUI user"] --> F["Deep Research Pipe"]
-  F --> A["Gateway API"]
+  F --> A["Gateway API + elected controller"]
   A --> P[("PostgreSQL")]
   A --> S["Artifact store"]
   A --> O["Open WebUI APIs"]
-  C["Elected controller"] --> K["Research Job"]
+  A --> K["Research Job"]
   K --> R["Runner"]
   R --> A
   R --> G["GPT Researcher"]
   G --> Q["SearXNG"]
+  Q -. "optional proxy" .-> V["External proxy or VPN gateway"]
+  G -. "optional SOCKS5" .-> V
+  V -.-> W
   Q --> W["Public web"]
   G -->|"headless NoDriver"| W
   G -->|"private sub-query"| A
@@ -138,6 +143,18 @@ Open WebUI is on <http://localhost:3000>, the gateway API on
 To run private-only research, set `PUBLIC_SEARCH_ENABLED=false`, recreate `api`, rerun
 `function-sync`, and select at least one attachment or Knowledge source.
 
+### Optional external proxy hook
+
+Direct egress remains the default. The optional `docker-compose.proxy.yaml` overlay starts an
+OpenVPN client with an internal SOCKS5 proxy and defaults to the gitignored
+`dev/searxng/settings.local.yml`. `SEARXNG_SETTINGS_FILE` can override the host file; it is always
+mounted at SearXNG's `/etc/searxng/settings.yml` container path.
+Set `OPENVPN_CONFIG_DIR` to the directory containing the client configuration and any referenced
+certificates and set `OPENVPN_AUTH_FILE` to a two-line file containing the username on the first
+line and password on the second. Both variables are required; `OPENVPN_CONFIG_NAME` is optional and
+defaults to `client.ovpn`. Then run `make run-proxy`. The directory is mounted read-only, the auth
+file is mounted as a Compose secret, and neither is included in an image.
+
 ### Optional Firecrawl experiment
 
 Firecrawl is retained only as a future comparison/integration overlay; it is not part of the
@@ -161,26 +178,40 @@ Prerequisites:
 
 - Open WebUI with `ENABLE_API_KEYS=true` and a dedicated integration account API key;
 - Open WebUI read access for each research user or group to the underlying models they may select;
-- PostgreSQL, an S3-compatible bucket, and cluster-internal SearXNG with JSON results enabled;
+- PostgreSQL and an S3-compatible bucket;
 - a published image from this repository; and
 - allowed network paths between the research namespace and those services.
 
-Provide a Secret through the deployment environment's secret-management mechanism:
+The chart does not create or interpret Secrets. Inject externally managed Secrets or ConfigMaps
+with each component's native `envFrom` list. Secret keys must be the runtime environment names,
+such as `DATABASE_URL`, `SERVICE_TOKEN`, `SIGNING_SECRET`, `OPENWEBUI_API_KEY`,
+`S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. The API and its embedded controller share
+`DATABASE_URL`; bundled
+SearXNG normally receives `SEARXNG_SECRET` through `searxng.envFrom`. Research Jobs need provider
+credentials only when `researchJob.env.MODEL_ROUTE=direct`.
+
+Create a production values file, for example:
 
 ```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: research-secrets
-  namespace: research
-type: Opaque
-stringData:
-  database-url: "postgresql+asyncpg://..."
-  service-token: "..."
-  signing-secret: "..."
-  openwebui-api-key: "..."
-  s3-access-key-id: "..."
-  s3-secret-access-key: "..."
+api:
+  env:
+    OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
+    SEARX_URL: http://research-open-webui-gpt-researcher-searxng:8080
+    S3_ENDPOINT_URL: https://s3.example.com
+    S3_BUCKET: research-artifacts
+  envFrom:
+    - secretRef:
+        name: research-api
+
+researchJob:
+  env:
+    CRAWLER_PROXY_URL: ""
+
+searxng:
+  enabled: true
+  envFrom:
+    - secretRef:
+        name: research-searxng
 ```
 
 Install the chart:
@@ -188,50 +219,64 @@ Install the chart:
 ```bash
 helm upgrade --install research ./chart/open-webui-gpt-researcher \
   --namespace research --create-namespace \
-  --set image.repository=ghcr.io/OWNER/open-webui-gpt-researcher \
-  --set image.tag=0.1.0 \
-  --set env.OPENWEBUI_URL='http://open-webui.open-webui.svc.cluster.local:8080' \
-  --set env.SEARX_URL='http://searxng.searxng.svc.cluster.local:8080' \
-  --set env.S3_ENDPOINT_URL='https://s3.example.com' \
-  --set env.S3_BUCKET='research-artifacts' \
-  --set secrets.existingSecret=research-secrets
+  --values values.production.yaml
 ```
 
-The chart runs schema migration, deploys API/controllers, and runs an idempotent Function sync Job.
-PostgreSQL session advisory locks elect one controller; use a direct or session-pooled database
-connection, not a transaction-pooling proxy. Runner Jobs use a non-root, read-only security context,
-resource limits, deadline, scoped token, and TTL. The image contains Chromium for NoDriver.
+The chart runs schema migration, deploys one gateway Deployment, and runs an idempotent Function
+sync Job. Each gateway replica serves the API and runs a controller task in the same process.
+PostgreSQL session advisory locks elect one active controller, so API replicas remain horizontally
+scalable; use a direct or session-pooled database connection, not a transaction-pooling proxy.
+Because that process creates and reconciles Jobs, its ServiceAccount receives namespace-scoped Job
+permissions. Runner Jobs use a non-root, read-only security context, resource limits, deadline,
+scoped token, and TTL. The image contains Chromium for NoDriver.
 
-SearXNG itself is intentionally outside this chart. Keep its Service cluster-internal and set
-`env.SEARX_URL`. The gateway, not runner Pods, calls SearXNG. No PostgreSQL extension is required
-for this project's schema.
+Configuration is grouped by runtime component under `api`, `researchJob`, and `searxng`.
+Controller settings live in `api.env` because the controller is part of the API process. Migration,
+Function sync, and cleanup use the API image, environment, `envFrom`,
+security contexts, scheduling, image-pull secrets, extra volumes, and mounts; their own blocks
+control enablement, lifecycle, schedule, and resources. Research Jobs are always available when
+the controller is running and have no separate `enabled` switch.
+
+SearXNG is opt-in. With `searxng.enabled=true`, the chart deploys one internal SearXNG Deployment
+and Service. Set `api.env.SEARX_URL` explicitly to that Service, or to an existing installation
+when `searxng.enabled=false`. The chart does not rewrite environment values. The gateway, not
+runner Pods, calls SearXNG. No PostgreSQL extension is required for this project's schema.
+
+For an optional externally managed proxy or VPN gateway, set
+`researchJob.env.CRAWLER_PROXY_URL` and add the corresponding `outgoing.proxies` block to
+`searxng.config` for the bundled search service. The chart does not deploy the proxy or VPN
+component.
 
 ### OCI chart and Argo CD
 
 A `v*` release tag publishes:
 
-- `ghcr.io/OWNER/open-webui-gpt-researcher:VERSION`;
-- `oci://ghcr.io/OWNER/charts/open-webui-gpt-researcher:VERSION`.
+- `ghcr.io/yevheniisemendiak/open-webui-gpt-researcher:VERSION`;
+- `oci://ghcr.io/yevheniisemendiak/charts/open-webui-gpt-researcher:VERSION`.
 
 Example Argo CD source:
 
 ```yaml
 source:
-  repoURL: ghcr.io/OWNER/charts
+  repoURL: ghcr.io/yevheniisemendiak/charts
   chart: open-webui-gpt-researcher
   targetRevision: 0.1.0
   helm:
     valuesObject:
-      image:
-        repository: ghcr.io/OWNER/open-webui-gpt-researcher
-        tag: 0.1.0
-      env:
-        OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
-        SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
-        S3_ENDPOINT_URL: https://s3.example.com
-        S3_BUCKET: research-artifacts
-      secrets:
-        existingSecret: research-secrets
+      api:
+        env:
+          OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
+          SEARX_URL: http://research-open-webui-gpt-researcher-searxng:8080
+          S3_ENDPOINT_URL: https://s3.example.com
+          S3_BUCKET: research-artifacts
+        envFrom:
+          - secretRef:
+              name: research-api
+      searxng:
+        enabled: true
+        envFrom:
+          - secretRef:
+              name: research-searxng
 ```
 
 For private GHCR packages, configure an OCI Helm repository credential in the Argo CD namespace
@@ -252,8 +297,8 @@ authorization, so Open WebUI renders native file cards and enforces normal owner
 research files** remains available only as an idempotent recovery action for historical messages or
 an interrupted attachment transfer; normal completion requires no click. **Save report to
 Knowledge** remains a separate explicit action and creates or updates Knowledge as the current user.
-No public researcher ingress is required. `env.ARTIFACT_BASE_URL` is retained only for direct API
-clients that explicitly want signed artifact URLs; chat rendering does not use those URLs.
+No public researcher ingress is required. `api.env.ARTIFACT_BASE_URL` is retained only for direct
+API clients that explicitly want signed artifact URLs; chat rendering does not use those URLs.
 
 ### Iterative and linked-chat research
 
@@ -311,8 +356,8 @@ and then fails it explicitly. `RUNNER_HEARTBEAT_SECONDS` defaults to 10 and
 recovery cannot bypass the user's original budget.
 Scheduled cleanup removes expired events, artifacts, jobs, and orphaned objects. Runtime settings
 use direct uppercase names such as `DATABASE_URL`, `DEFAULT_MODEL_PROFILES`, `SEARX_URL`, `JOB_ID`,
-and `RUNNER_TOKEN`. The Helm chart exposes these non-secret settings directly under `env:`;
-credentials remain Kubernetes Secret references.
+`CRAWLER_PROXY_URL`, and `RUNNER_TOKEN`. The Helm chart exposes operator-provided settings under
+each component's `env` and `envFrom`; it does not render or own credentials.
 
 ## Development
 
@@ -335,6 +380,7 @@ Tests fake external boundaries only; production has no mock research engine.
 - [GPT Researcher configuration](https://docs.gptr.dev/docs/gpt-researcher/gptr/config)
 - [GPT Researcher import fix in the pinned revision](https://github.com/assafelovic/gpt-researcher/commit/bea0ad07c3ead12517c79e03789da49a270fd249)
 - [SearXNG search API](https://docs.searxng.org/dev/search_api.html)
+- [SearXNG outbound proxy settings](https://docs.searxng.org/admin/settings/settings_outgoing.html)
 - [NoDriver implementation used by pinned GPT Researcher](https://github.com/assafelovic/gpt-researcher/blob/master/gpt_researcher/scraper/browser/nodriver_scraper.py)
 - [Helm OCI registries](https://helm.sh/docs/topics/registries/)
 - [Argo CD Helm/OCI repositories](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#helm)

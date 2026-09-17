@@ -1,109 +1,63 @@
-replicaCount: 2
-
-image:
-  repository: ghcr.io/example/open-webui-gpt-researcher
-  tag: "0.1.0"
-  pullPolicy: IfNotPresent
-
-imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount:
-  create: true
-  annotations: {}
-  controllerName: ""
-  runnerName: ""
-
-service:
-  type: ClusterIP
-  port: 8090
-
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  host: research.example.com
-  path: /v1/research-jobs
-  pathType: Prefix
-  tls: []
-
-env:
-  ENVIRONMENT: production
-  # Optional browser-reachable base URL used only for signed artifact download links.
-  # The API and runners continue to use the ClusterIP Service when this is empty.
-  ARTIFACT_BASE_URL: ""
-  OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
-  OPENWEBUI_TIMEOUT_SECONDS: 600
-  ARTIFACT_BACKEND: s3
-  ARTIFACT_PATH: /data/artifacts
-  S3_ENDPOINT_URL: https://s3.example.com
-  S3_REGION: us-east-1
-  S3_BUCKET: research-artifacts
-  MODE: k8s
-  PUBLIC_SEARCH_ENABLED: true
-  # SearXNG is deployed separately; NoDriver runs headlessly inside each runner.
-  RETRIEVER: searx
-  SCRAPER: nodriver
-  SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
-  MODEL_ROUTE: openwebui
-  # Suggestions only. Users choose accessible models for every research run.
-  DEFAULT_MODEL_PROFILES:
-    default:
-      fast: gpt-4.1-mini
-      smart: gpt-4.1
-      strategic: gpt-4.1
-  DEFAULT_RESEARCH_STRATEGY: balanced
-  MODEL_CONTEXT_SAFETY_TOKENS: 256
-  REASONING_EFFORT: ""
-  EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
-  MAX_CONCURRENT_JOBS: 5
-  # Quoted to preserve all 64 bits through YAML/Helm parsing.
-  CONTROLLER_LEADER_LOCK_ID: "7305809465149768307"
-  CONTROLLER_LEADER_RETRY_SECONDS: 5
-  DISPATCH_LEASE_SECONDS: 120
-  DISPATCH_RECONCILE_BATCH_SIZE: 100
-  RUNNER_HEARTBEAT_SECONDS: 10
-  RUNNER_STALE_SECONDS: 60
-  RUNNER_MAX_ATTEMPTS: 2
-  HARD_MAX_INPUT_TOKENS: 300000
-  HARD_MAX_OUTPUT_TOKENS: 64000
-  HARD_MAX_QUERIES: 100
-  HARD_MAX_WALL_TIME_SECONDS: 7200
-  EVENT_RETENTION_DAYS: 30
-  ARTIFACT_RETENTION_DAYS: 90
-  JOB_RETENTION_DAYS: 90
-  ORPHAN_GRACE_SECONDS: 86400
-  CLEANUP_BATCH_SIZE: 100
-
-runner:
-  activeDeadlineSeconds: 7200
-  ttlSecondsAfterFinished: 3600
-  extraEnvSecret: ""
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: "2"
-      memory: 2Gi
-
-database:
-  # Defaults to secrets.existingSecret (or the chart-created Secret) when empty.
-  existingSecret: ""
-  secretKey: database-url
-
-secrets:
-  existingSecret: ""
-  create: false
-  databaseUrl: ""
-  serviceToken: ""
-  signingSecret: ""
-  openwebuiApiKey: ""
-  s3AccessKeyId: ""
-  s3SecretAccessKey: ""
-
 api:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/yevheniisemendiak/open-webui-gpt-researcher
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  service:
+    type: ClusterIP
+    port: 8090
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  env:
+    ENVIRONMENT: production
+    # Optional browser-reachable base URL used only for signed artifact download links.
+    ARTIFACT_BASE_URL: ""
+    OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
+    OPENWEBUI_TIMEOUT_SECONDS: 600
+    FUNCTION_SOURCES_PATH: /app/openwebui_functions
+    ARTIFACT_BACKEND: s3
+    ARTIFACT_PATH: /data/artifacts
+    S3_ENDPOINT_URL: https://s3.example.com
+    S3_REGION: us-east-1
+    S3_BUCKET: research-artifacts
+    MODE: k8s
+    PUBLIC_SEARCH_ENABLED: true
+    RETRIEVER: searx
+    SCRAPER: nodriver
+    SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
+    CRAWLER_PROXY_URL: ""
+    MODEL_ROUTE: openwebui
+    DEFAULT_MODEL_PROFILES: '{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}'
+    DEFAULT_RESEARCH_STRATEGY: balanced
+    MODEL_CONTEXT_SAFETY_TOKENS: 256
+    REASONING_EFFORT: ""
+    EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+    HARD_MAX_INPUT_TOKENS: 300000
+    HARD_MAX_OUTPUT_TOKENS: 64000
+    HARD_MAX_QUERIES: 100
+    HARD_MAX_WALL_TIME_SECONDS: 7200
+    MAX_CONCURRENT_JOBS: 5
+    CONTROLLER_LEADER_RETRY_SECONDS: 5
+    DISPATCH_LEASE_SECONDS: 120
+    DISPATCH_RECONCILE_BATCH_SIZE: 100
+    RUNNER_HEARTBEAT_SECONDS: 10
+    RUNNER_STALE_SECONDS: 60
+    RUNNER_MAX_ATTEMPTS: 2
+    EVENT_RETENTION_DAYS: 30
+    ARTIFACT_RETENTION_DAYS: 90
+    JOB_RETENTION_DAYS: 90
+    ORPHAN_GRACE_SECONDS: 86400
+    CLEANUP_BATCH_SIZE: 100
+  # Native Kubernetes EnvFromSource entries. Use externally managed Secrets or ConfigMaps.
+  envFrom: []
   resources:
     requests:
       cpu: 100m
@@ -111,16 +65,89 @@ api:
     limits:
       cpu: "1"
       memory: 1Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+    runAsNonRoot: true
+    runAsUser: 10001
+  podLabels: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraVolumes: []
+  extraVolumeMounts: []
 
-controller:
-  replicaCount: 2
+# Research Jobs are created dynamically by the controller and are always enabled.
+researchJob:
+  image:
+    repository: ghcr.io/yevheniisemendiak/open-webui-gpt-researcher
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  env:
+    ENVIRONMENT: production
+    PUBLIC_SEARCH_ENABLED: true
+    RETRIEVER: searx
+    SCRAPER: nodriver
+    CRAWLER_PROXY_URL: ""
+    MODEL_ROUTE: openwebui
+    EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+    RUNNER_HEARTBEAT_SECONDS: 10
+    RUNNER_CANCEL_POLL_SECONDS: 1
+  envFrom: []
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+    runAsNonRoot: true
+    runAsUser: 10001
+  podLabels: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# API companion jobs inherit api.image, api.env, api.envFrom, security, scheduling,
+# image pull secrets, extra volumes, and extra mounts.
+migration:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 256Mi
 
 functionSync:
   enabled: true
@@ -149,29 +176,71 @@ cleanup:
       cpu: 500m
       memory: 256Mi
 
-podSecurityContext:
-  runAsNonRoot: true
-  seccompProfile:
-    type: RuntimeDefault
+searxng:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: searxng/searxng
+    tag: 2026.9.15-ca4965040
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  service:
+    type: ClusterIP
+    port: 8080
+  env:
+    SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+  envFrom: []
+  config: |
+    use_default_settings:
+      engines:
+        keep_only:
+          - google
 
-containerSecurityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop: [ALL]
-  runAsNonRoot: true
-  runAsUser: 10001
+    engines:
+      - name: google
+        engine: google
+        shortcut: g
+        disabled: false
 
-podAnnotations: {}
-podLabels: {}
-nodeSelector: {}
-tolerations: []
-affinity: {}
+    server:
+      bind_address: "0.0.0.0"
+      port: 8080
+      secret_key: "overridden-by-SEARXNG_SECRET"
+      limiter: false
+      image_proxy: false
+
+    search:
+      formats:
+        - html
+        - json
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 977
+    runAsGroup: 977
+    fsGroup: 977
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    runAsNonRoot: true
+  podLabels: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraVolumes: []
+  extraVolumeMounts: []
 
 networkPolicy:
   enabled: true
   additionalIngress: []
-
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1

@@ -17,39 +17,62 @@ spec:
       ttlSecondsAfterFinished: {{ .Values.cleanup.ttlSecondsAfterFinished }}
       template:
         metadata:
+          {{- with .Values.api.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           labels:
             {{- include "research.selectorLabels" . | nindent 12 }}
             app.kubernetes.io/component: cleanup
+            {{- with .Values.api.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
         spec:
           restartPolicy: Never
-          serviceAccountName: {{ include "research.runnerServiceAccount" . }}
+          serviceAccountName: {{ include "research.apiServiceAccount" . }}
           automountServiceAccountToken: false
           securityContext:
-            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+            {{- toYaml .Values.api.podSecurityContext | nindent 12 }}
           imagePullSecrets:
-            {{- toYaml .Values.imagePullSecrets | nindent 12 }}
+            {{- toYaml .Values.api.imagePullSecrets | nindent 12 }}
           containers:
             - name: cleanup
-              image: {{ include "research.image" . }}
-              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              image: {{ printf "%s:%s" .Values.api.image.repository .Values.api.image.tag }}
+              imagePullPolicy: {{ .Values.api.image.pullPolicy }}
               args: ["cleanup"]
               securityContext:
-                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
-              envFrom:
-                - configMapRef:
-                    name: {{ include "research.fullname" . }}
+                {{- toYaml .Values.api.containerSecurityContext | nindent 16 }}
               env:
-                - name: DATABASE_URL
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ include "research.databaseSecretName" . }}
-                      key: {{ .Values.database.secretKey }}
-                {{- include "research.artifactSecretEnv" . | nindent 16 }}
+                {{- range $name, $value := .Values.api.env }}
+                - name: {{ $name }}
+                  value: {{ $value | quote }}
+                {{- end }}
+                - name: INTERNAL_BASE_URL
+                  value: {{ printf "http://%s:%v" (include "research.fullname" .) .Values.api.service.port | quote }}
+              {{- with .Values.api.envFrom }}
+              envFrom:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               resources:
                 {{- toYaml .Values.cleanup.resources | nindent 16 }}
               volumeMounts:
                 - {name: tmp, mountPath: /tmp}
+                - {name: artifacts, mountPath: /data/artifacts}
+                {{- with .Values.api.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
           volumes:
             - name: tmp
               emptyDir: {}
+            - name: artifacts
+              emptyDir: {}
+            {{- with .Values.api.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          nodeSelector:
+            {{- toYaml .Values.api.nodeSelector | nindent 12 }}
+          tolerations:
+            {{- toYaml .Values.api.tolerations | nindent 12 }}
+          affinity:
+            {{- toYaml .Values.api.affinity | nindent 12 }}
 {{- end }}

@@ -110,6 +110,7 @@ jobs:
         shell: bash
         run: |
           helm lint chart/open-webui-gpt-researcher
+          helm template release-check chart/open-webui-gpt-researcher --set searxng.enabled=true >/dev/null
           mkdir -p dist/helm
           helm package chart/open-webui-gpt-researcher \
             --destination dist/helm \

@@ -11,11 +11,19 @@ spec:
       {{- include "research.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
+    {{- if or .Values.api.enabled .Values.searxng.enabled }}
     - from:
         - podSelector: {}
       ports:
+        {{- if .Values.api.enabled }}
         - protocol: TCP
-          port: 8090
+          port: {{ .Values.api.service.port }}
+        {{- end }}
+        {{- if .Values.searxng.enabled }}
+        - protocol: TCP
+          port: {{ .Values.searxng.service.port }}
+        {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicy.additionalIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

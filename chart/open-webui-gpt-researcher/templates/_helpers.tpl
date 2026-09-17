@@ -23,55 +23,14 @@ app.kubernetes.io/name: {{ include "research.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{- define "research.controllerServiceAccount" -}}
-{{- default (printf "%s-controller" (include "research.fullname" .)) .Values.serviceAccount.controllerName }}
+{{- define "research.apiServiceAccount" -}}
+{{- default (printf "%s-api" (include "research.fullname" .)) .Values.api.serviceAccount.name }}
 {{- end }}
 
-{{- define "research.runnerServiceAccount" -}}
-{{- default (printf "%s-runner" (include "research.fullname" .)) .Values.serviceAccount.runnerName }}
+{{- define "research.researchJobServiceAccount" -}}
+{{- default (printf "%s-research-job" (include "research.fullname" .)) .Values.researchJob.serviceAccount.name }}
 {{- end }}
 
-{{- define "research.secretName" -}}
-{{- default (include "research.fullname" .) .Values.secrets.existingSecret }}
-{{- end }}
-
-{{- define "research.databaseSecretName" -}}
-{{- default (include "research.secretName" .) .Values.database.existingSecret }}
-{{- end }}
-
-{{- define "research.image" -}}
-{{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
-{{- end }}
-
-{{- define "research.apiSecretEnv" -}}
-- name: SERVICE_TOKEN
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "research.secretName" . }}
-      key: service-token
-- name: SIGNING_SECRET
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "research.secretName" . }}
-      key: signing-secret
-- name: OPENWEBUI_API_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "research.secretName" . }}
-      key: openwebui-api-key
-{{- end }}
-
-{{- define "research.artifactSecretEnv" -}}
-- name: S3_ACCESS_KEY_ID
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "research.secretName" . }}
-      key: s3-access-key-id
-      optional: true
-- name: S3_SECRET_ACCESS_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "research.secretName" . }}
-      key: s3-secret-access-key
-      optional: true
+{{- define "research.searxngFullname" -}}
+{{- printf "%s-searxng" (include "research.fullname" . | trunc 55 | trimSuffix "-") -}}
 {{- end }}

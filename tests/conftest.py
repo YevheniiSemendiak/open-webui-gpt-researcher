@@ -33,7 +33,7 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 async def api_client(settings: Settings) -> AsyncIterator[tuple[httpx.AsyncClient, object]]:
-    app = create_app(settings)
+    app = create_app(settings, start_controller=False)
     async with (
         LifespanManager(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,

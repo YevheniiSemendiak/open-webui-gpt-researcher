@@ -15,6 +15,7 @@ x-research-environment: &research-environment
   RETRIEVER: ${RETRIEVER:-searx}
   SCRAPER: ${SCRAPER:-nodriver}
   SEARX_URL: ${SEARX_URL:-http://searxng:8080}
+  CRAWLER_PROXY_URL: ${CRAWLER_PROXY_URL:-}
   MODEL_ROUTE: ${MODEL_ROUTE:-openwebui}
   DEFAULT_MODEL_PROFILES: '${DEFAULT_MODEL_PROFILES:-{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}}'
   DEFAULT_RESEARCH_STRATEGY: ${DEFAULT_RESEARCH_STRATEGY:-balanced}
@@ -86,8 +87,12 @@ services:
     image: ${SEARXNG_IMAGE:-searxng/searxng:latest@sha256:f1aca3f61c7ff4552b8d54c0ab7fb458e907b78f51c503210cf450c900adca2c}
     environment:
       SEARXNG_BASE_URL: http://localhost:8080/
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
     volumes:
-      - ./dev/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - type: bind
+        source: ${SEARXNG_SETTINGS_FILE:-./dev/searxng/settings.yml}
+        target: /etc/searxng/settings.yml
+        read_only: true
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 5s

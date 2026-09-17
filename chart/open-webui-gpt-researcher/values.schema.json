@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "properties": {
-    "replicaCount": {"type": "integer", "minimum": 1},
+  "additionalProperties": false,
+  "$defs": {
     "image": {
       "type": "object",
       "required": ["repository", "tag", "pullPolicy"],
@@ -14,103 +14,153 @@
     },
     "env": {
       "type": "object",
-      "required": ["OPENWEBUI_URL", "MODE", "DEFAULT_MODEL_PROFILES"],
-      "properties": {
-        "ARTIFACT_BASE_URL": {"type": "string"},
-        "OPENWEBUI_URL": {"type": "string", "minLength": 1},
-        "OPENWEBUI_TIMEOUT_SECONDS": {"type": "number", "minimum": 30, "maximum": 3600},
-        "PUBLIC_SEARCH_ENABLED": {"type": "boolean"},
-        "RETRIEVER": {"type": "string", "minLength": 1},
-        "SCRAPER": {"type": "string", "minLength": 1},
-        "SEARX_URL": {"type": "string", "minLength": 1},
-        "MAX_CONCURRENT_JOBS": {"type": "integer", "minimum": 1, "maximum": 100},
-        "DEFAULT_MODEL_PROFILES": {
-          "type": "object",
-          "additionalProperties": {
-            "oneOf": [
-              {"type": "string", "minLength": 1},
-              {
-                "type": "object",
-                "required": ["fast", "smart", "strategic"],
-                "properties": {
-                  "fast": {"type": "string", "minLength": 1},
-                  "smart": {"type": "string", "minLength": 1},
-                  "strategic": {"type": "string", "minLength": 1}
-                }
-              }
-            ]
-          }
-        },
-        "MODEL_CONTEXT_SAFETY_TOKENS": {"type": "integer", "minimum": 0, "maximum": 8192},
-        "DEFAULT_RESEARCH_STRATEGY": {"enum": ["focused", "balanced", "broad", "deep"]},
-        "REASONING_EFFORT": {"enum": ["", "low", "medium", "high"]},
-        "MODE": {"enum": ["local", "k8s"]},
-        "CONTROLLER_LEADER_LOCK_ID": {"type": "string", "pattern": "^[0-9]+$"},
-        "CONTROLLER_LEADER_RETRY_SECONDS": {"type": "number", "minimum": 0.5},
-        "DISPATCH_LEASE_SECONDS": {"type": "integer", "minimum": 10, "maximum": 3600},
-        "DISPATCH_RECONCILE_BATCH_SIZE": {"type": "integer", "minimum": 1, "maximum": 10000},
-        "RUNNER_HEARTBEAT_SECONDS": {"type": "number", "minimum": 1, "maximum": 300},
-        "RUNNER_STALE_SECONDS": {"type": "integer", "minimum": 10, "maximum": 3600},
-        "RUNNER_MAX_ATTEMPTS": {"type": "integer", "minimum": 1, "maximum": 10},
-        "HARD_MAX_QUERIES": {"type": "integer", "minimum": 1},
-        "EVENT_RETENTION_DAYS": {"type": "integer", "minimum": 1, "maximum": 3650},
-        "ARTIFACT_RETENTION_DAYS": {"type": "integer", "minimum": 1, "maximum": 3650},
-        "JOB_RETENTION_DAYS": {"type": "integer", "minimum": 1, "maximum": 3650},
-        "ORPHAN_GRACE_SECONDS": {"type": "integer", "minimum": 3600, "maximum": 2592000},
-        "CLEANUP_BATCH_SIZE": {"type": "integer", "minimum": 1, "maximum": 10000},
-        "HARD_MAX_WALL_TIME_SECONDS": {"type": "integer", "minimum": 60, "maximum": 86400}
-      }
+      "additionalProperties": {"type": ["string", "number", "boolean"]}
     },
-    "runner": {
-      "type": "object",
-      "required": ["activeDeadlineSeconds", "ttlSecondsAfterFinished", "resources"],
-      "properties": {
-        "activeDeadlineSeconds": {"type": "integer", "minimum": 60},
-        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
-        "extraEnvSecret": {"type": "string"},
-        "resources": {"type": "object"}
-      }
+    "envFrom": {
+      "type": "array",
+      "items": {"type": "object"}
     },
-    "database": {
+    "serviceAccount": {
       "type": "object",
-      "required": ["secretKey"],
+      "required": ["create", "name", "annotations"],
       "properties": {
-        "existingSecret": {"type": "string"},
-        "secretKey": {"type": "string", "minLength": 1}
-      }
-    },
-    "secrets": {
-      "type": "object",
-      "properties": {
-        "existingSecret": {"type": "string"},
         "create": {"type": "boolean"},
-        "databaseUrl": {"type": "string"},
-        "serviceToken": {"type": "string"},
-        "signingSecret": {"type": "string"},
-        "openwebuiApiKey": {"type": "string"},
-        "s3AccessKeyId": {"type": "string"},
-        "s3SecretAccessKey": {"type": "string"}
+        "name": {"type": "string"},
+        "annotations": {"type": "object"}
       }
     },
-    "functionSync": {
+    "resources": {"type": "object"},
+    "stringMap": {
       "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "objectArray": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "companionJob": {
+      "type": "object",
+      "required": ["enabled", "backoffLimit", "ttlSecondsAfterFinished", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
         "backoffLimit": {"type": "integer", "minimum": 0},
-        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
+        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
+        "resources": {"$ref": "#/$defs/resources"}
+      }
+    }
+  },
+  "properties": {
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "api": {
+      "type": "object",
+      "required": ["enabled", "replicaCount", "image", "imagePullSecrets", "service", "serviceAccount", "env", "envFrom", "resources", "podSecurityContext", "containerSecurityContext", "podLabels", "podAnnotations", "nodeSelector", "tolerations", "affinity", "extraVolumes", "extraVolumeMounts"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicaCount": {"type": "integer", "minimum": 1},
+        "image": {"$ref": "#/$defs/image"},
+        "imagePullSecrets": {"$ref": "#/$defs/objectArray"},
+        "service": {
+          "type": "object",
+          "required": ["type", "port"],
+          "properties": {
+            "type": {"type": "string", "minLength": 1},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "serviceAccount": {"$ref": "#/$defs/serviceAccount"},
+        "env": {"$ref": "#/$defs/env"},
+        "envFrom": {"$ref": "#/$defs/envFrom"},
+        "resources": {"$ref": "#/$defs/resources"},
+        "podSecurityContext": {"type": "object"},
+        "containerSecurityContext": {"type": "object"},
+        "podLabels": {"$ref": "#/$defs/stringMap"},
+        "podAnnotations": {"$ref": "#/$defs/stringMap"},
+        "nodeSelector": {"$ref": "#/$defs/stringMap"},
+        "tolerations": {"$ref": "#/$defs/objectArray"},
+        "affinity": {"type": "object"},
+        "extraVolumes": {"$ref": "#/$defs/objectArray"},
+        "extraVolumeMounts": {"$ref": "#/$defs/objectArray"}
       }
     },
+    "researchJob": {
+      "type": "object",
+      "required": ["image", "imagePullSecrets", "serviceAccount", "env", "envFrom", "activeDeadlineSeconds", "ttlSecondsAfterFinished", "backoffLimit", "resources", "podSecurityContext", "containerSecurityContext", "podLabels", "podAnnotations", "nodeSelector", "tolerations", "affinity", "extraVolumes", "extraVolumeMounts"],
+      "properties": {
+        "image": {"$ref": "#/$defs/image"},
+        "imagePullSecrets": {"$ref": "#/$defs/objectArray"},
+        "serviceAccount": {"$ref": "#/$defs/serviceAccount"},
+        "env": {"$ref": "#/$defs/env"},
+        "envFrom": {"$ref": "#/$defs/envFrom"},
+        "activeDeadlineSeconds": {"type": "integer", "minimum": 60},
+        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
+        "backoffLimit": {"type": "integer", "minimum": 0},
+        "resources": {"$ref": "#/$defs/resources"},
+        "podSecurityContext": {"type": "object"},
+        "containerSecurityContext": {"type": "object"},
+        "podLabels": {"$ref": "#/$defs/stringMap"},
+        "podAnnotations": {"$ref": "#/$defs/stringMap"},
+        "nodeSelector": {"$ref": "#/$defs/stringMap"},
+        "tolerations": {"$ref": "#/$defs/objectArray"},
+        "affinity": {"type": "object"},
+        "extraVolumes": {"$ref": "#/$defs/objectArray"},
+        "extraVolumeMounts": {"$ref": "#/$defs/objectArray"}
+      }
+    },
+    "migration": {"$ref": "#/$defs/companionJob"},
+    "functionSync": {"$ref": "#/$defs/companionJob"},
     "cleanup": {
       "type": "object",
+      "required": ["enabled", "schedule", "backoffLimit", "ttlSecondsAfterFinished", "successfulJobsHistoryLimit", "failedJobsHistoryLimit", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
         "schedule": {"type": "string", "minLength": 1},
         "backoffLimit": {"type": "integer", "minimum": 0},
         "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
         "successfulJobsHistoryLimit": {"type": "integer", "minimum": 0},
-        "failedJobsHistoryLimit": {"type": "integer", "minimum": 0}
+        "failedJobsHistoryLimit": {"type": "integer", "minimum": 0},
+        "resources": {"$ref": "#/$defs/resources"}
+      }
+    },
+    "searxng": {
+      "type": "object",
+      "required": ["enabled", "replicaCount", "image", "imagePullSecrets", "service", "env", "envFrom", "config", "resources", "podSecurityContext", "containerSecurityContext", "podLabels", "podAnnotations", "nodeSelector", "tolerations", "affinity", "extraVolumes", "extraVolumeMounts"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicaCount": {"type": "integer", "minimum": 1},
+        "image": {"$ref": "#/$defs/image"},
+        "imagePullSecrets": {"$ref": "#/$defs/objectArray"},
+        "service": {
+          "type": "object",
+          "required": ["type", "port"],
+          "properties": {
+            "type": {"type": "string", "minLength": 1},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "env": {"$ref": "#/$defs/env"},
+        "envFrom": {"$ref": "#/$defs/envFrom"},
+        "config": {"type": "string", "minLength": 1},
+        "resources": {"$ref": "#/$defs/resources"},
+        "podSecurityContext": {"type": "object"},
+        "containerSecurityContext": {"type": "object"},
+        "podLabels": {"$ref": "#/$defs/stringMap"},
+        "podAnnotations": {"$ref": "#/$defs/stringMap"},
+        "nodeSelector": {"$ref": "#/$defs/stringMap"},
+        "tolerations": {"$ref": "#/$defs/objectArray"},
+        "affinity": {"type": "object"},
+        "extraVolumes": {"$ref": "#/$defs/objectArray"},
+        "extraVolumeMounts": {"$ref": "#/$defs/objectArray"}
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["enabled", "additionalIngress"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "additionalIngress": {"$ref": "#/$defs/objectArray"}
       }
     }
   },
-  "required": ["image", "env", "runner", "database", "secrets"]
+  "required": ["api", "researchJob", "migration", "functionSync", "cleanup", "searxng", "networkPolicy"]
 }

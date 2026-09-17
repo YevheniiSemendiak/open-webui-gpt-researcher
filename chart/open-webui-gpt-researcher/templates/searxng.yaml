@@ -1,0 +1,119 @@
+{{- if .Values.searxng.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "research.searxngFullname" . }}
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: searxng
+data:
+  settings.yml: |
+{{ .Values.searxng.config | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "research.searxngFullname" . }}
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: searxng
+spec:
+  type: {{ .Values.searxng.service.type }}
+  selector:
+    {{- include "research.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: searxng
+  ports:
+    - name: http
+      port: {{ .Values.searxng.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "research.searxngFullname" . }}
+  labels:
+    {{- include "research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: searxng
+spec:
+  replicas: {{ .Values.searxng.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "research.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: searxng
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ .Values.searxng.config | sha256sum }}
+        {{- with .Values.searxng.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "research.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: searxng
+        {{- with .Values.searxng.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.searxng.podSecurityContext | nindent 8 }}
+      imagePullSecrets:
+        {{- toYaml .Values.searxng.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: searxng
+          image: {{ printf "%s:%s" .Values.searxng.image.repository .Values.searxng.image.tag }}
+          imagePullPolicy: {{ .Values.searxng.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.searxng.containerSecurityContext | nindent 12 }}
+          env:
+            {{- range $name, $value := .Values.searxng.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- with .Values.searxng.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            {{- toYaml .Values.searxng.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/searxng
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.searxng.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "research.searxngFullname" . }}
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.searxng.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      nodeSelector:
+        {{- toYaml .Values.searxng.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.searxng.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.searxng.affinity | nindent 8 }}
+{{- end }}

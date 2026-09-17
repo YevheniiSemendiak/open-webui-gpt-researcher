@@ -82,6 +82,7 @@ def make_artifact_store(settings: Settings) -> ArtifactStore:
 def create_app(
     settings: Settings | None = None,
     *,
+    start_controller: bool = True,
     database: Database | None = None,
     artifact_store: ArtifactStore | None = None,
     openwebui: OpenWebUIClient | None = None,
@@ -105,7 +106,7 @@ def create_app(
         if settings.auto_create_schema:
             await database.create_all()
         dispatcher_task: asyncio.Task[None] | None = None
-        if settings.mode == "local":
+        if start_controller:
             dispatcher = Controller(
                 settings=settings,
                 database=database,
@@ -113,7 +114,7 @@ def create_app(
                 executor=make_executor(settings),
             )
             dispatcher_task = asyncio.create_task(
-                dispatcher.run_forever(), name="local-research-dispatcher"
+                dispatcher.run_forever(), name="research-controller"
             )
         try:
             yield

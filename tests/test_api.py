@@ -16,7 +16,8 @@ from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.controller import Controller
 
 
-async def test_local_mode_embeds_dispatcher(settings: Settings, monkeypatch: Any) -> None:
+@pytest.mark.parametrize("mode", ["local", "k8s"])
+async def test_api_embeds_dispatcher(settings: Settings, monkeypatch: Any, mode: str) -> None:
     started = asyncio.Event()
     stopped = asyncio.Event()
 
@@ -30,7 +31,7 @@ async def test_local_mode_embeds_dispatcher(settings: Settings, monkeypatch: Any
             raise
 
     monkeypatch.setattr(Controller, "run_forever", run_forever)
-    app = create_app(settings.model_copy(update={"mode": "local"}))
+    app = create_app(settings.model_copy(update={"mode": mode}))
     async with LifespanManager(app):
         await asyncio.wait_for(started.wait(), timeout=1)
     assert stopped.is_set()

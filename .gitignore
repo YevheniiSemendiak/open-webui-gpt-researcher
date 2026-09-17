@@ -9,3 +9,5 @@ artifacts/
 dist/
 htmlcov/
 *.egg-info/
+dev/searxng/settings.local.yml
+local_secrets/

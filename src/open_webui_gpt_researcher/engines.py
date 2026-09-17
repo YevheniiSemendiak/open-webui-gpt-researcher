@@ -23,6 +23,7 @@ REPORT_LANGUAGE_POLICY = (
     "report language"
 )
 _original_zendriver_config: Callable[..., Any] | None = None
+_zendriver_proxy_url: str | None = None
 
 
 class GatewaySearxRetriever:
@@ -334,6 +335,7 @@ class GPTResearcherEngine:
     public_search_enabled: bool = True
     retriever: str = "searx"
     scraper: str = "nodriver"
+    crawler_proxy_url: str | None = None
 
     async def run(
         self,
@@ -422,8 +424,9 @@ class GPTResearcherEngine:
 
     def _configure_upstream(self, spec: RunnerJobSpec) -> None:
         """Apply process-local safety adaptations to the pinned upstream package."""
-        global _original_zendriver_config
+        global _original_zendriver_config, _zendriver_proxy_url
         del spec
+        _zendriver_proxy_url = self.crawler_proxy_url
         loaded = sys.modules.get("gpt_researcher")
         if loaded is not None and not hasattr(loaded, "__path__"):
             # Unit-test doubles expose only GPTResearcher, not the upstream package tree.
@@ -447,6 +450,13 @@ class GPTResearcherEngine:
                     # Kubernetes blocks privilege escalation, so Chromium's setuid
                     # sandbox cannot initialize. The Pod and container sandboxes remain.
                     kwargs.setdefault("sandbox", False)
+                    browser_args = list(kwargs.get("browser_args") or [])
+                    if _zendriver_proxy_url and not any(
+                        argument.startswith("--proxy-server=") for argument in browser_args
+                    ):
+                        browser_args.append(f"--proxy-server={_zendriver_proxy_url}")
+                    if browser_args:
+                        kwargs["browser_args"] = browser_args
                     return original_config(*args, **kwargs)
 
                 zendriver_module: Any = zendriver

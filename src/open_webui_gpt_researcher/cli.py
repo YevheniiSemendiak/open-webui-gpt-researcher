@@ -12,10 +12,8 @@ from alembic.config import Config
 from .api import create_app, make_artifact_store
 from .cleanup import RetentionCleaner
 from .config import get_settings
-from .controller import Controller
 from .db import Database
 from .engines import GPTResearcherEngine
-from .executors import make_executor
 from .function_sync import FunctionSync
 from .logging import configure_logging
 from .repository import JobRepository
@@ -28,30 +26,12 @@ def parse_args() -> argparse.Namespace:
     api = subparsers.add_parser("api")
     api.add_argument("--host", default="0.0.0.0")  # noqa: S104
     api.add_argument("--port", default=8090, type=int)
-    subparsers.add_parser("controller")
     subparsers.add_parser("runner")
     subparsers.add_parser("migrate")
     subparsers.add_parser("cleanup")
     sync = subparsers.add_parser("sync-functions")
     sync.add_argument("--if-configured", action="store_true")
     return parser.parse_args()
-
-
-async def run_controller() -> None:
-    settings = get_settings()
-    if settings.mode != "k8s":
-        raise SystemExit("the standalone controller is only used in k8s mode")
-    database = Database(settings.database_url)
-    try:
-        controller = Controller(
-            settings=settings,
-            database=database,
-            repository=JobRepository(),
-            executor=make_executor(settings),
-        )
-        await controller.run_forever()
-    finally:
-        await database.close()
 
 
 async def run_runner() -> None:
@@ -73,6 +53,7 @@ async def run_runner() -> None:
             public_search_enabled=settings.public_search_enabled,
             retriever=settings.retriever,
             scraper=settings.scraper,
+            crawler_proxy_url=settings.crawler_proxy_url,
         ),
     ).run()
 
@@ -117,8 +98,6 @@ def main() -> None:
     configure_logging(settings.log_level)
     if args.command == "api":
         uvicorn.run(create_app(settings), host=args.host, port=args.port)
-    elif args.command == "controller":
-        asyncio.run(run_controller())
     elif args.command == "runner":
         asyncio.run(run_runner())
     elif args.command == "migrate":
