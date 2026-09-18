@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -234,6 +235,57 @@ async def test_pipe_reports_starting_instead_of_remaining_queued(monkeypatch: An
     ]
     assert "job `job-1`" in rendered
     assert rendered.endswith("# Finished report")
+
+
+async def test_stopping_pipe_cancels_durable_research_job(monkeypatch: Any) -> None:
+    pipe = Pipe()
+    pipe.valves.service_token = "service-token"
+    pipe.valves.service_url = "http://research"
+    pipe.valves.job_poll_interval_seconds = 60
+    polled = asyncio.Event()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path == "/v1/research-jobs/job-1":
+            polled.set()
+            return httpx.Response(200, json={"id": "job-1", "state": "running"})
+        if request.method == "POST" and request.url.path == "/v1/research-jobs/job-1:cancel":
+            return httpx.Response(200, json={"id": "job-1", "state": "cancel_requested"})
+        raise AssertionError(request.url)
+
+    original_client = httpx.AsyncClient
+
+    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        del args, kwargs
+        return original_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr("openwebui_functions.deep_research_pipe.httpx.AsyncClient", client)
+    stream = pipe._stream_job_result(
+        job_id="job-1",
+        user_id="user-1",
+        authorization="Bearer user-token",
+        started="Deep research started",
+        max_wait_seconds=3_600,
+        event_emitter=None,
+    )
+    assert await anext(stream) == "Deep research started\n\n"
+
+    assert await anext(stream) == ""
+    await asyncio.wait_for(polled.wait(), timeout=1)
+    next_chunk = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    next_chunk.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await next_chunk
+
+    cancel = next(
+        request
+        for request in requests
+        if request.method == "POST" and request.url.path.endswith(":cancel")
+    )
+    assert cancel.headers["x-research-service-token"] == "service-token"
+    assert cancel.headers["x-openwebui-user-id"] == "user-1"
 
 
 async def test_pipe_collects_current_and_linked_chat_context(monkeypatch: Any) -> None:
