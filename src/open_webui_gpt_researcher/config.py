@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -33,6 +34,7 @@ class Settings(BaseSettings):
 
     artifact_backend: Literal["filesystem", "s3"] = "filesystem"
     artifact_path: str = "/data/artifacts"
+    artifact_prefix: str = ""
     s3_endpoint_url: str | None = None
     s3_region: str = "us-east-1"
     s3_bucket: str = "research-artifacts"
@@ -128,6 +130,26 @@ class Settings(BaseSettings):
             return value.replace("postgres://", "postgresql+asyncpg://", 1)
         return value
 
+    @field_validator("artifact_prefix", mode="before")
+    @classmethod
+    def normalize_artifact_prefix(cls, value: object) -> object:
+        if value in (None, ""):
+            return ""
+        if not isinstance(value, str):
+            return value
+        candidate = value.strip().rstrip("/")
+        if not candidate:
+            return ""
+        path = PurePosixPath(candidate)
+        if path.is_absolute() or ".." in path.parts or "\\" in candidate:
+            raise ValueError("ARTIFACT_PREFIX must be a relative POSIX object-key prefix")
+        normalized = path.as_posix()
+        if normalized == ".":
+            return ""
+        if len(normalized) > 512:
+            raise ValueError("ARTIFACT_PREFIX must not exceed 512 characters")
+        return normalized
+
     @field_validator("crawler_proxy_url", mode="before")
     @classmethod
     def validate_crawler_proxy_url(cls, value: object) -> object:
@@ -174,6 +196,10 @@ class Settings(BaseSettings):
     def validate_api_secrets(self) -> None:
         if self.service_token.get_secret_value().startswith("change-me"):
             raise ValueError("SERVICE_TOKEN must be configured")
+
+    @property
+    def artifact_jobs_prefix(self) -> str:
+        return "/".join(part for part in (self.artifact_prefix, "jobs") if part)
 
     def validate_budget(self, budget: ResearchBudget) -> None:
         """Reject user refinements above administrator-defined hard limits."""

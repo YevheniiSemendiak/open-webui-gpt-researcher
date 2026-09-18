@@ -23,6 +23,7 @@ api:
     FUNCTION_SOURCES_PATH: /app/openwebui_functions
     ARTIFACT_BACKEND: s3
     ARTIFACT_PATH: /data/artifacts
+    ARTIFACT_PREFIX: ""
     S3_ENDPOINT_URL: https://s3.example.com
     S3_REGION: us-east-1
     S3_BUCKET: research-artifacts

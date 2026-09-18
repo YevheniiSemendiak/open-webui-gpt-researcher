@@ -46,7 +46,9 @@ async def test_cleanup_removes_expired_records_artifacts_and_orphans(tmp_path: P
         event = await session.scalar(select(ResearchEvent).where(ResearchEvent.job_id == job.id))
         assert event is not None
         event.created_at = old
-        stored = await store.put(f"jobs/{job.id}/report.md", b"old", "text/markdown")
+        stored = await store.put(
+            f"shared/researcher/jobs/{job.id}/report.md", b"old", "text/markdown"
+        )
         await repository.add_artifact(
             session,
             job_id=job.id,  # type: ignore[arg-type]
@@ -56,7 +58,7 @@ async def test_cleanup_removes_expired_records_artifacts_and_orphans(tmp_path: P
             size=stored.size,
         )
 
-    orphan = await store.put("jobs/orphan/report.md", b"orphan", "text/markdown")
+    orphan = await store.put("shared/researcher/jobs/orphan/report.md", b"orphan", "text/markdown")
     old_timestamp = old.timestamp()
     os.utime(tmp_path / "artifacts" / orphan.object_key, (old_timestamp, old_timestamp))
 
@@ -64,6 +66,7 @@ async def test_cleanup_removes_expired_records_artifacts_and_orphans(tmp_path: P
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'cleanup.sqlite'}",
         artifact_backend="filesystem",
         artifact_path=str(tmp_path / "artifacts"),
+        artifact_prefix="shared/researcher",
         event_retention_days=1,
         artifact_retention_days=1,
         job_retention_days=1,
@@ -84,5 +87,5 @@ async def test_cleanup_removes_expired_records_artifacts_and_orphans(tmp_path: P
         assert await session.get(ResearchJob, job_id) is None
         assert await session.scalar(select(func.count()).select_from(ResearchEvent)) == 0
         assert await session.scalar(select(func.count()).select_from(ResearchArtifact)) == 0
-    assert await store.list_objects("jobs") == []
+    assert await store.list_objects("shared/researcher/jobs") == []
     await database.close()
