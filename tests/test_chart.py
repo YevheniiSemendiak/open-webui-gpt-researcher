@@ -10,10 +10,13 @@ def test_values_schema_accepts_helm_inherited_globals() -> None:
     assert schema["properties"]["global"] == {"type": "object"}
 
 
-def test_preinstall_migration_does_not_reference_release_service_account() -> None:
+def test_migration_annotations_are_configurable_and_safe_by_default() -> None:
     migration = (ROOT / "chart/open-webui-gpt-researcher/templates/migrate.yaml").read_text()
+    values = (ROOT / "chart/open-webui-gpt-researcher/values.yaml").read_text()
 
-    assert "helm.sh/hook: pre-install,pre-upgrade" in migration
+    assert ".Values.migration.annotations" in migration
+    assert "helm.sh/hook: pre-install,pre-upgrade" in values
+    assert "helm.sh/hook-weight:" in values
     assert "serviceAccountName:" not in migration
     assert "automountServiceAccountToken: false" in migration
 

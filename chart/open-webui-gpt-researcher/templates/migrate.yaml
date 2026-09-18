@@ -6,10 +6,10 @@ metadata:
   labels:
     {{- include "research.labels" . | nindent 4 }}
     app.kubernetes.io/component: migration
+  {{- with .Values.migration.annotations }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
-    helm.sh/hook-weight: "-5"
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   ttlSecondsAfterFinished: {{ .Values.migration.ttlSecondsAfterFinished }}
