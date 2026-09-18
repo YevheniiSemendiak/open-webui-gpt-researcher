@@ -29,6 +29,9 @@ SCRAPER_PAGE_TIMEOUT_SECONDS=120
 SEARX_URL=http://searxng:8080
 ```
 
+`SCRAPER_PAGE_TIMEOUT_SECONDS` bounds each browser-fetched source independently. A source that
+times out is omitted and its Chromium instance is recycled so the remaining research can continue.
+
 Apply the configuration and import or update the Open WebUI Pipe and Action:
 
 ```bash

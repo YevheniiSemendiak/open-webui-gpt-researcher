@@ -605,7 +605,7 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     assert "--proxy-server=socks5://external-proxy:1080" in browser_config.browser_args
 
 
-def test_late_zendriver_response_does_not_kill_listener() -> None:
+async def test_late_zendriver_response_does_not_kill_listener() -> None:
     from zendriver.core.connection import Transaction
 
     def command() -> Any:

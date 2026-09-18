@@ -521,8 +521,9 @@ class GPTResearcherEngine:
             from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
             from zendriver.core.connection import Transaction
 
-            if not hasattr(Transaction, "_owui_original_call"):
-                Transaction._owui_original_call = Transaction.__call__
+            transaction_class: Any = Transaction
+            if not hasattr(transaction_class, "_owui_original_call"):
+                transaction_class._owui_original_call = transaction_class.__call__
 
                 def ignore_late_response(self: Any, **response: dict[str, Any]) -> None:
                     # A cancelled CDP request can remain in Zendriver's mapper until
@@ -536,7 +537,7 @@ class GPTResearcherEngine:
                         if not self.done():
                             raise
 
-                Transaction.__call__ = ignore_late_response
+                transaction_class.__call__ = ignore_late_response
 
             if _original_zendriver_config is None:
                 _original_zendriver_config = zendriver.Config
