@@ -74,12 +74,16 @@ def test_scraper_timeout_settings_are_bounded() -> None:
     settings = Settings(
         _env_file=None,
         scraper_page_timeout_seconds=45,
+        nodriver_max_concurrency=3,
         runner_cancel_grace_seconds=3,
     )
     assert settings.scraper_page_timeout_seconds == 45
+    assert settings.nodriver_max_concurrency == 3
     assert settings.runner_cancel_grace_seconds == 3
     with pytest.raises(ValidationError, match="scraper_page_timeout_seconds"):
         Settings(_env_file=None, scraper_page_timeout_seconds=5)
+    with pytest.raises(ValidationError, match="nodriver_max_concurrency"):
+        Settings(_env_file=None, nodriver_max_concurrency=0)
 
 
 def test_artifact_prefix_is_normalized_and_scopes_jobs() -> None:
@@ -653,6 +657,60 @@ async def test_browser_scrape_timeout_retires_browser_and_drops_source() -> None
     assert result == ("", [], "")
     assert retired
     assert cancelled
+
+
+async def test_nodriver_page_concurrency_is_process_wide(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
+
+    active = 0
+    peak = 0
+    started = 0
+    first_wave_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def scrape(self: Any) -> tuple[str, list[dict[str, Any]], str]:
+        nonlocal active, peak, started
+        active += 1
+        started += 1
+        peak = max(peak, active)
+        if started == 2:
+            first_wave_started.set()
+        try:
+            await release.wait()
+            return f"content for {self.url}", [], "title"
+        finally:
+            active -= 1
+
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine(nodriver_max_concurrency=2)._configure_upstream(spec)
+    monkeypatch.setattr(NoDriverScraper, "_owui_original_scrape_async", scrape)
+    tasks = [
+        asyncio.create_task(NoDriverScraper(f"https://example.com/{index}").scrape_async())
+        for index in range(4)
+    ]
+
+    try:
+        await asyncio.wait_for(first_wave_started.wait(), timeout=1)
+        await asyncio.sleep(0.01)
+        assert started == 2
+        assert peak == 2
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+
+    assert started == 4
+    assert peak == 2
 
 
 def test_proxy_timeout_session_applies_proxy_and_default_timeout(

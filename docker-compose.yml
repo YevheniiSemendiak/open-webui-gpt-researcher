@@ -14,6 +14,7 @@ x-research-environment: &research-environment
   RETRIEVER: ${RETRIEVER:-searx}
   SCRAPER: ${SCRAPER:-nodriver}
   SCRAPER_PAGE_TIMEOUT_SECONDS: ${SCRAPER_PAGE_TIMEOUT_SECONDS:-120}
+  NODRIVER_MAX_CONCURRENCY: ${NODRIVER_MAX_CONCURRENCY:-2}
   SEARX_URL: ${SEARX_URL:-http://searxng:8080}
   CRAWLER_PROXY_URL: ${CRAWLER_PROXY_URL:-}
   DEFAULT_MODEL_PROFILES: '${DEFAULT_MODEL_PROFILES:-{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}}'

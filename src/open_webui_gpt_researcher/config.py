@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     retriever: str = "searx"
     scraper: str = "nodriver"
     scraper_page_timeout_seconds: float = Field(default=120.0, ge=10.0, le=600.0)
+    nodriver_max_concurrency: int = Field(default=2, ge=1, le=16)
     searx_url: str = "http://searxng:8080"
     crawler_proxy_url: str | None = None
     default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}

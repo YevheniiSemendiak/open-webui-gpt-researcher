@@ -54,6 +54,7 @@ async def run_runner() -> None:
             retriever=settings.retriever,
             scraper=settings.scraper,
             scraper_page_timeout_seconds=settings.scraper_page_timeout_seconds,
+            nodriver_max_concurrency=settings.nodriver_max_concurrency,
             crawler_proxy_url=settings.crawler_proxy_url,
         ),
     ).run()

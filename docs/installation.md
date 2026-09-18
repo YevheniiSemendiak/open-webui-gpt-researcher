@@ -26,6 +26,7 @@ PUBLIC_SEARCH_ENABLED=true
 RETRIEVER=searx
 SCRAPER=nodriver
 SCRAPER_PAGE_TIMEOUT_SECONDS=120
+NODRIVER_MAX_CONCURRENCY=2
 SEARX_URL=http://searxng:8080
 ```
 
@@ -33,6 +34,8 @@ SEARX_URL=http://searxng:8080
 (including ArXiv and PDF fetches). A source that times out is omitted and a stalled Chromium
 instance is recycled so the remaining research can continue. When `CRAWLER_PROXY_URL` is nonempty,
 the browser and supported Python fetchers use it; leaving it empty disables the proxy adapters.
+`NODRIVER_MAX_CONCURRENCY` limits active Chromium pages across all nested researchers in a runner;
+lower values reduce peak memory without dropping sources, at the cost of longer scraping time.
 
 Apply the configuration and import or update the Open WebUI Pipe and Action:
 
@@ -205,6 +208,7 @@ api:
 researchJob:
   env:
     CRAWLER_PROXY_URL: ""
+    NODRIVER_MAX_CONCURRENCY: 2
 
 searxng:
   enabled: true

@@ -298,6 +298,7 @@ class GPTResearcherEngine:
     retriever: str = "searx"
     scraper: str = "nodriver"
     scraper_page_timeout_seconds: float = 120.0
+    nodriver_max_concurrency: int = 2
     crawler_proxy_url: str | None = None
 
     async def run(
@@ -392,6 +393,7 @@ class GPTResearcherEngine:
             retriever=self.retriever,
             scraper=self.scraper,
             scraper_page_timeout_seconds=self.scraper_page_timeout_seconds,
+            nodriver_max_concurrency=self.nodriver_max_concurrency,
             crawler_proxy_url=self.crawler_proxy_url,
             public_retriever=GatewaySearxRetriever,
             private_retriever=OpenWebUIRetriever,

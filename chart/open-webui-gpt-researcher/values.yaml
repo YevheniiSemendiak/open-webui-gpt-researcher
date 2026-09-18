@@ -99,6 +99,7 @@ researchJob:
     RETRIEVER: searx
     SCRAPER: nodriver
     SCRAPER_PAGE_TIMEOUT_SECONDS: 120
+    NODRIVER_MAX_CONCURRENCY: 2
     CRAWLER_PROXY_URL: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
     RUNNER_HEARTBEAT_SECONDS: 10
@@ -115,7 +116,7 @@ researchJob:
       memory: 512Mi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 6Gi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
