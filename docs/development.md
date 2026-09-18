@@ -86,6 +86,8 @@ gitignored `dev/searxng/settings.local.yml` unless `SEARXNG_SETTINGS_FILE` is se
 
 Use `make run-proxy` and `make stop-proxy`. Credential injection and operator-facing setup are
 documented in [Installation](installation.md#optional-proxy-hook-for-local-deployment).
+The proxy discovers its original gateway and directly connected subnet before OpenVPN starts.
+Use `VPN_BYPASS_CIDRS` for routed client networks that are not visible on the container interface.
 
 Keep the proxy optional. Production Helm templates expose proxy connection hooks but must not
 manage a VPN Deployment or its credentials.

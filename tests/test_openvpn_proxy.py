@@ -11,7 +11,12 @@ def test_openvpn_proxy_is_fail_closed() -> None:
     healthcheck = (ROOT / "dev/openvpn-proxy/healthcheck.sh").read_text()
 
     assert "external: tun0" in sockd_config
+    assert 'ip -4 route show default' in entrypoint
+    assert 'ip -o -4 addr show dev "$uplink_interface"' in entrypoint
+    assert 'VPN_BYPASS_CIDRS' in entrypoint
+    assert 'ip -4 route replace "$cidr"' in entrypoint
     assert "if ! ip link show tun0 >/dev/null 2>&1; then" in entrypoint
     assert 'kill -0 "$openvpn_pid"' in entrypoint
     assert "pidof openvpn" in healthcheck
     assert "pidof sockd" in healthcheck
+    assert 'ip -4 route get "$destination"' in healthcheck
