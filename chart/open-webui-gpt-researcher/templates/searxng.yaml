@@ -70,6 +70,9 @@ spec:
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- with .Values.searxng.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.searxng.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

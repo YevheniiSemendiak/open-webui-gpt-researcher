@@ -32,3 +32,22 @@ def test_application_images_default_to_the_chart_app_version() -> None:
     assert 'appVersion: "0.0.0-dev"' in chart
     assert values.count('tag: ""') == 2
     assert templates.count(".Chart.AppVersion") == 5
+
+
+def test_chart_supports_value_from_environment() -> None:
+    root = ROOT / "chart/open-webui-gpt-researcher"
+    values = (root / "values.yaml").read_text()
+    deployment = (root / "templates/deployments.yaml").read_text()
+    migration = (root / "templates/migrate.yaml").read_text()
+    function_sync = (root / "templates/function-sync.yaml").read_text()
+    cleanup = (root / "templates/cleanup.yaml").read_text()
+
+    assert values.count("extraEnv: []") == 6
+    assert "RUNNER_EXTRA_ENV" in deployment
+    assert ".Values.api.extraEnv" in deployment
+    assert ".Values.api.extraEnv" in migration
+    assert ".Values.api.extraEnv" in function_sync
+    assert ".Values.api.extraEnv" in cleanup
+    assert ".Values.migration.extraEnv" in migration
+    assert ".Values.functionSync.extraEnv" in function_sync
+    assert ".Values.cleanup.extraEnv" in cleanup

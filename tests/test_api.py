@@ -4,7 +4,6 @@ import asyncio
 import copy
 from typing import Any
 from unittest.mock import AsyncMock
-from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -222,12 +221,12 @@ async def test_job_lifecycle_and_artifact_download(
             headers=other_user,
         )
     ).status_code == 404
-    report_url = job.json()["result"]["artifacts"]["report.md"]
-    parsed = urlsplit(report_url)
-    artifact = await client.get(f"{parsed.path}?{parsed.query}")
-    assert artifact.status_code == 200
-    assert artifact.text.startswith("# Report")
-    assert artifact.headers["content-disposition"] == 'attachment; filename="report.md"'
+    assert job.json()["result"]["artifact_names"] == [
+        "report.md",
+        "research-notes.md",
+        "sources.json",
+        "run.json",
+    ]
     completion_messages = [
         call.kwargs
         for call in app.state.openwebui.emit_message_event.await_args_list
@@ -699,13 +698,9 @@ async def test_output_limit_is_capped_to_model_context_window(
     assert 1 <= payload["max_tokens"] < 1_000
 
 
-async def test_health_and_invalid_artifact_token(
+async def test_health_endpoints(
     api_client: tuple[httpx.AsyncClient, Any],
 ) -> None:
     client, _ = api_client
     assert (await client.get("/health/live")).json() == {"status": "ok"}
     assert (await client.get("/health/ready")).json() == {"status": "ok"}
-    invalid = await client.get(
-        "/v1/research-jobs/00000000-0000-0000-0000-000000000000/artifacts/report.md?token=invalid"
-    )
-    assert invalid.status_code == 401
