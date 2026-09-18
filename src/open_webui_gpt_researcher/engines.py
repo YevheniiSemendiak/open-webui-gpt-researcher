@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -24,8 +25,76 @@ REPORT_LANGUAGE_POLICY = (
 )
 _original_zendriver_config: Callable[..., Any] | None = None
 _zendriver_proxy_url: str | None = None
+_nodriver_page_timeout_seconds = 120.0
 _original_get_retrievers: Callable[..., list[type[Any]]] | None = None
 _job_retrievers: tuple[type[Any], ...] = ()
+
+_BROWSER_FAILURE_MARKERS = (
+    "cannot find default execution context",
+    "browser failed to open page",
+    "failed to connect to browser",
+)
+
+
+def sanitize_browser_scrape_result(
+    result: tuple[str, list[dict[str, Any]], str],
+) -> tuple[str, list[dict[str, Any]], str]:
+    """Prevent browser exception strings from being accepted as source content."""
+    content, images, title = result
+    normalized = content.strip().lower()
+    if not title and any(marker in normalized for marker in _BROWSER_FAILURE_MARKERS):
+        return "", [], ""
+    return content, images, title
+
+
+def _consume_background_task(task: asyncio.Future[Any]) -> None:
+    """Retrieve detached cleanup exceptions so asyncio does not emit noisy warnings."""
+    if task.cancelled():
+        return
+    with suppress(asyncio.CancelledError):
+        task.exception()
+
+
+async def _retire_nodriver_browsers(scraper_class: type[Any]) -> None:
+    """Remove and stop the shared browser pool after a page operation stalls."""
+    try:
+        async with asyncio.timeout(2):
+            async with scraper_class.browsers_lock:
+                browsers = tuple(scraper_class.browsers)
+                scraper_class.browsers.clear()
+    except TimeoutError:
+        browsers = tuple(scraper_class.browsers)
+        scraper_class.browsers.clear()
+
+    async def stop(browser: Any) -> None:
+        browser.stopping = True
+        try:
+            async with asyncio.timeout(5):
+                await browser.driver.stop()
+        except Exception as error:
+            scraper_class.logger.warning("Failed to retire stalled browser: %s", error)
+
+    await asyncio.gather(*(stop(browser) for browser in browsers), return_exceptions=True)
+
+
+async def bounded_browser_scrape(
+    operation: Awaitable[tuple[str, list[dict[str, Any]], str]],
+    *,
+    timeout_seconds: float,
+    on_timeout: Callable[[], Awaitable[None]],
+) -> tuple[str, list[dict[str, Any]], str]:
+    """Bound one browser source without waiting forever for cancellation cleanup."""
+    task: asyncio.Future[tuple[str, list[dict[str, Any]], str]] = asyncio.ensure_future(operation)
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    if task in done:
+        return sanitize_browser_scrape_result(task.result())
+
+    task.cancel()
+    await on_timeout()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    if task not in done:
+        task.add_done_callback(_consume_background_task)
+    return "", [], ""
 
 
 class GatewaySearxRetriever:
@@ -322,6 +391,7 @@ class GPTResearcherEngine:
     public_search_enabled: bool = True
     retriever: str = "searx"
     scraper: str = "nodriver"
+    scraper_page_timeout_seconds: float = 120.0
     crawler_proxy_url: str | None = None
 
     async def run(
@@ -411,8 +481,9 @@ class GPTResearcherEngine:
     def _configure_upstream(self, spec: RunnerJobSpec) -> None:
         """Apply process-local safety adaptations to the pinned upstream package."""
         global _job_retrievers, _original_get_retrievers, _original_zendriver_config
-        global _zendriver_proxy_url
+        global _zendriver_proxy_url, _nodriver_page_timeout_seconds
         _zendriver_proxy_url = self.crawler_proxy_url
+        _nodriver_page_timeout_seconds = self.scraper_page_timeout_seconds
         loaded = sys.modules.get("gpt_researcher")
         if loaded is not None and not hasattr(loaded, "__path__"):
             # Unit-test doubles expose only GPTResearcher, not the upstream package tree.
@@ -478,6 +549,24 @@ class GPTResearcherEngine:
                     return await cls._owui_original_get_browser(cls, headless=True)
 
                 NoDriverScraper.get_browser = classmethod(get_headless_browser)
+            if not hasattr(NoDriverScraper, "_owui_original_scrape_async"):
+                NoDriverScraper._owui_original_scrape_async = NoDriverScraper.scrape_async
+
+                async def scrape_with_timeout(self: Any) -> tuple[str, list[dict[str, Any]], str]:
+                    result = await bounded_browser_scrape(
+                        self._owui_original_scrape_async(),
+                        timeout_seconds=_nodriver_page_timeout_seconds,
+                        on_timeout=lambda: _retire_nodriver_browsers(NoDriverScraper),
+                    )
+                    if not result[0]:
+                        NoDriverScraper.logger.warning(
+                            "NoDriver scrape failed or timed out after %.1f seconds for %s",
+                            _nodriver_page_timeout_seconds,
+                            self.url,
+                        )
+                    return result
+
+                NoDriverScraper.scrape_async = scrape_with_timeout
             NoDriverScraper.max_browsers = 1
 
         from gpt_researcher.actions import report_generation

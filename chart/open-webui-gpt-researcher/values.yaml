@@ -98,10 +98,12 @@ researchJob:
     PUBLIC_SEARCH_ENABLED: true
     RETRIEVER: searx
     SCRAPER: nodriver
+    SCRAPER_PAGE_TIMEOUT_SECONDS: 120
     CRAWLER_PROXY_URL: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
     RUNNER_HEARTBEAT_SECONDS: 10
     RUNNER_CANCEL_POLL_SECONDS: 1
+    RUNNER_CANCEL_GRACE_SECONDS: 10
   envFrom: []
   extraEnv: []
   activeDeadlineSeconds: 7200

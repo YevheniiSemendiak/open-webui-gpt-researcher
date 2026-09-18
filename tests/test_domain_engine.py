@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from uuid import uuid4
@@ -23,10 +24,12 @@ from open_webui_gpt_researcher.engines import (
     ProgressEmitter,
     ResearchBatchTracker,
     bound_scraped_results,
+    bounded_browser_scrape,
     deduplicate_sources,
     ensure_iteration_summary,
     ensure_search_queries,
     normalize_progress_update,
+    sanitize_browser_scrape_result,
 )
 
 TEST_MODELS = {"fast": "test-model", "smart": "test-model", "strategic": "test-model"}
@@ -61,6 +64,18 @@ def test_blank_reasoning_effort_is_unset() -> None:
     assert Settings(_env_file=None, reasoning_effort="").reasoning_effort is None
     assert Settings(_env_file=None, reasoning_effort="  ").reasoning_effort is None
     assert Settings(_env_file=None, reasoning_effort="high").reasoning_effort == "high"
+
+
+def test_scraper_timeout_settings_are_bounded() -> None:
+    settings = Settings(
+        _env_file=None,
+        scraper_page_timeout_seconds=45,
+        runner_cancel_grace_seconds=3,
+    )
+    assert settings.scraper_page_timeout_seconds == 45
+    assert settings.runner_cancel_grace_seconds == 3
+    with pytest.raises(ValidationError, match="scraper_page_timeout_seconds"):
+        Settings(_env_file=None, scraper_page_timeout_seconds=5)
 
 
 def test_artifact_prefix_is_normalized_and_scopes_jobs() -> None:
@@ -576,6 +591,7 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
 
     assert retrievers.SearxSearch is GatewaySearxRetriever
     assert NoDriverScraper.max_browsers == 1
+    assert hasattr(NoDriverScraper, "_owui_original_scrape_async")
     assert hasattr(browser, "_owui_original_scrape_urls")
     from gpt_researcher.skills.deep_research import DeepResearchSkill
 
@@ -584,6 +600,44 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     browser_config = zendriver.Config(headless=True)
     assert browser_config.sandbox is False
     assert "--proxy-server=socks5://external-proxy:1080" in browser_config.browser_args
+
+
+def test_browser_failures_are_not_accepted_as_source_content() -> None:
+    failure = (
+        "Cannot find default execution context\ncommand:Runtime.evaluate [code: -32000]",
+        [{"url": "ignored"}],
+        "",
+    )
+    assert sanitize_browser_scrape_result(failure) == ("", [], "")
+    success = ("Useful source text", [{"url": "image"}], "Source title")
+    assert sanitize_browser_scrape_result(success) == success
+
+
+async def test_browser_scrape_timeout_retires_browser_and_drops_source() -> None:
+    retired = False
+    cancelled = False
+
+    async def stalled() -> tuple[str, list[dict[str, object]], str]:
+        nonlocal cancelled
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    async def retire() -> None:
+        nonlocal retired
+        retired = True
+
+    result = await bounded_browser_scrape(
+        stalled(),
+        timeout_seconds=0.01,
+        on_timeout=retire,
+    )
+
+    assert result == ("", [], "")
+    assert retired
+    assert cancelled
 
 
 def test_upstream_retriever_factory_propagates_private_sources_to_children() -> None:
