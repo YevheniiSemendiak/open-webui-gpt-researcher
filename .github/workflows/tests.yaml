@@ -61,9 +61,13 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
+          load: true
           push: false
+          tags: open-webui-gpt-researcher:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Smoke-test application image entrypoint
+        run: docker run --rm open-webui-gpt-researcher:test --help
       - uses: docker/build-push-action@v7
         with:
           context: .
