@@ -1,6 +1,13 @@
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_values_schema_accepts_helm_inherited_globals() -> None:
+    schema = json.loads((ROOT / "chart/open-webui-gpt-researcher/values.schema.json").read_text())
+
+    assert schema["properties"]["global"] == {"type": "object"}
 
 
 def test_preinstall_migration_does_not_reference_release_service_account() -> None:
