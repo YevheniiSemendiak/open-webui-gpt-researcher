@@ -36,7 +36,13 @@ sockd -f /etc/sockd.conf &
 sockd_pid=$!
 
 while kill -0 "$openvpn_pid" 2>/dev/null && kill -0 "$sockd_pid" 2>/dev/null; do
-    sleep 2
+    # Dante is bound to tun0, so it cannot fall back to the pod's ordinary
+    # interface. Exit as soon as the tunnel disappears so the supervisor also
+    # tears down the proxy process and restarts the container fail-closed.
+    if ! ip link show tun0 >/dev/null 2>&1; then
+        exit 1
+    fi
+    sleep 1
 done
 
 exit 1
