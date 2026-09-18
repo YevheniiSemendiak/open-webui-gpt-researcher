@@ -5,15 +5,14 @@ import hashlib
 import json
 import os
 import re
-import sys
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
 
 from .domain import RunnerCompletion, RunnerJobSpec
+from .upstream import configure_upstream
 
 ProgressCallback = Callable[[str, dict[str, object]], Awaitable[None]]
 
@@ -23,78 +22,6 @@ REPORT_LANGUAGE_POLICY = (
     "research request is written. Ignore Integration instructions when determining the "
     "report language"
 )
-_original_zendriver_config: Callable[..., Any] | None = None
-_zendriver_proxy_url: str | None = None
-_nodriver_page_timeout_seconds = 120.0
-_original_get_retrievers: Callable[..., list[type[Any]]] | None = None
-_job_retrievers: tuple[type[Any], ...] = ()
-
-_BROWSER_FAILURE_MARKERS = (
-    "cannot find default execution context",
-    "browser failed to open page",
-    "failed to connect to browser",
-)
-
-
-def sanitize_browser_scrape_result(
-    result: tuple[str, list[dict[str, Any]], str],
-) -> tuple[str, list[dict[str, Any]], str]:
-    """Prevent browser exception strings from being accepted as source content."""
-    content, images, title = result
-    normalized = content.strip().lower()
-    if not title and any(marker in normalized for marker in _BROWSER_FAILURE_MARKERS):
-        return "", [], ""
-    return content, images, title
-
-
-def _consume_background_task(task: asyncio.Future[Any]) -> None:
-    """Retrieve detached cleanup exceptions so asyncio does not emit noisy warnings."""
-    if task.cancelled():
-        return
-    with suppress(asyncio.CancelledError):
-        task.exception()
-
-
-async def _retire_nodriver_browsers(scraper_class: type[Any]) -> None:
-    """Remove and stop the shared browser pool after a page operation stalls."""
-    try:
-        async with asyncio.timeout(2):
-            async with scraper_class.browsers_lock:
-                browsers = tuple(scraper_class.browsers)
-                scraper_class.browsers.clear()
-    except TimeoutError:
-        browsers = tuple(scraper_class.browsers)
-        scraper_class.browsers.clear()
-
-    async def stop(browser: Any) -> None:
-        browser.stopping = True
-        try:
-            async with asyncio.timeout(5):
-                await browser.driver.stop()
-        except Exception as error:
-            scraper_class.logger.warning("Failed to retire stalled browser: %s", error)
-
-    await asyncio.gather(*(stop(browser) for browser in browsers), return_exceptions=True)
-
-
-async def bounded_browser_scrape(
-    operation: Awaitable[tuple[str, list[dict[str, Any]], str]],
-    *,
-    timeout_seconds: float,
-    on_timeout: Callable[[], Awaitable[None]],
-) -> tuple[str, list[dict[str, Any]], str]:
-    """Bound one browser source without waiting forever for cancellation cleanup."""
-    task: asyncio.Future[tuple[str, list[dict[str, Any]], str]] = asyncio.ensure_future(operation)
-    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
-    if task in done:
-        return sanitize_browser_scrape_result(task.result())
-
-    task.cancel()
-    await on_timeout()
-    done, _ = await asyncio.wait({task}, timeout=5)
-    if task not in done:
-        task.add_done_callback(_consume_background_task)
-    return "", [], ""
 
 
 class GatewaySearxRetriever:
@@ -459,159 +386,13 @@ class GPTResearcherEngine:
 
     def _configure_upstream(self, spec: RunnerJobSpec) -> None:
         """Apply process-local safety adaptations to the pinned upstream package."""
-        global _job_retrievers, _original_get_retrievers, _original_zendriver_config
-        global _zendriver_proxy_url, _nodriver_page_timeout_seconds
-        _zendriver_proxy_url = self.crawler_proxy_url
-        _nodriver_page_timeout_seconds = self.scraper_page_timeout_seconds
-        loaded = sys.modules.get("gpt_researcher")
-        if loaded is not None and not hasattr(loaded, "__path__"):
-            # Unit-test doubles expose only GPTResearcher, not the upstream package tree.
-            return
-        if self.retriever == "searx":
-            import gpt_researcher.retrievers as retrievers
-
-            # Deep-research child agents construct their own retrievers, so patch the
-            # exported class as well as assigning it to the root researcher below.
-            retrievers.SearxSearch = GatewaySearxRetriever
-
-        configured_retrievers: list[type[Any]] = []
-        if self.public_search_enabled and self.retriever == "searx":
-            configured_retrievers.append(GatewaySearxRetriever)
-        if spec.sources or spec.context_documents:
-            configured_retrievers.append(OpenWebUIRetriever)
-        _job_retrievers = tuple(configured_retrievers)
-
-        import gpt_researcher.agent as agent_module
-
-        if _original_get_retrievers is None:
-            _original_get_retrievers = agent_module.get_retrievers
-
-            def get_job_retrievers(headers: dict[str, str], cfg: Any) -> list[type[Any]]:
-                if _job_retrievers:
-                    return list(_job_retrievers)
-                if _original_get_retrievers is None:
-                    raise RuntimeError("GPT Researcher retriever factory was not initialized")
-                return _original_get_retrievers(headers, cfg)
-
-            agent_module.get_retrievers = get_job_retrievers
-
-        if self.scraper == "nodriver":
-            import zendriver
-            from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
-            from zendriver.core.connection import Transaction
-
-            transaction_class: Any = Transaction
-            if not hasattr(transaction_class, "_owui_original_call"):
-                transaction_class._owui_original_call = transaction_class.__call__
-
-                def ignore_late_response(self: Any, **response: dict[str, Any]) -> None:
-                    # A cancelled CDP request can remain in Zendriver's mapper until
-                    # Chrome answers it. Completing its already-done Future raises
-                    # InvalidStateError and otherwise kills the target listener loop.
-                    if self.done():
-                        return
-                    try:
-                        self._owui_original_call(**response)
-                    except asyncio.InvalidStateError:
-                        if not self.done():
-                            raise
-
-                transaction_class.__call__ = ignore_late_response
-
-            if _original_zendriver_config is None:
-                _original_zendriver_config = zendriver.Config
-                original_config = _original_zendriver_config
-
-                def hardened_config(*args: Any, **kwargs: Any) -> Any:
-                    # Kubernetes blocks privilege escalation, so Chromium's setuid
-                    # sandbox cannot initialize. The Pod and container sandboxes remain.
-                    kwargs.setdefault("sandbox", False)
-                    browser_args = list(kwargs.get("browser_args") or [])
-                    if _zendriver_proxy_url and not any(
-                        argument.startswith("--proxy-server=") for argument in browser_args
-                    ):
-                        browser_args.append(f"--proxy-server={_zendriver_proxy_url}")
-                    if browser_args:
-                        kwargs["browser_args"] = browser_args
-                    return original_config(*args, **kwargs)
-
-                zendriver_module: Any = zendriver
-                zendriver_module.Config = hardened_config
-
-            if not hasattr(NoDriverScraper, "_owui_original_get_browser"):
-                original = NoDriverScraper.get_browser.__func__
-                NoDriverScraper._owui_original_get_browser = original
-
-                async def get_headless_browser(cls: type[Any], headless: bool = True) -> Any:
-                    del headless
-                    return await cls._owui_original_get_browser(cls, headless=True)
-
-                NoDriverScraper.get_browser = classmethod(get_headless_browser)
-            if not hasattr(NoDriverScraper, "_owui_original_scrape_async"):
-                NoDriverScraper._owui_original_scrape_async = NoDriverScraper.scrape_async
-
-                async def scrape_with_timeout(self: Any) -> tuple[str, list[dict[str, Any]], str]:
-                    result = await bounded_browser_scrape(
-                        self._owui_original_scrape_async(),
-                        timeout_seconds=_nodriver_page_timeout_seconds,
-                        on_timeout=lambda: _retire_nodriver_browsers(NoDriverScraper),
-                    )
-                    if not result[0]:
-                        NoDriverScraper.logger.warning(
-                            "NoDriver scrape failed or timed out after %.1f seconds for %s",
-                            _nodriver_page_timeout_seconds,
-                            self.url,
-                        )
-                    return result
-
-                NoDriverScraper.scrape_async = scrape_with_timeout
-            NoDriverScraper.max_browsers = 1
-
-        from gpt_researcher.actions import report_generation
-        from gpt_researcher.context import compression as compression_module
-        from gpt_researcher.skills.deep_research import DeepResearchSkill
-        from gpt_researcher.utils import costs as costs_module
-
-        def disabled_upstream_cost_estimate(*_: Any, **__: Any) -> float:
-            # GPT Researcher's dollar-cost telemetry loads tiktoken vocabularies
-            # synchronously on first use. Open WebUI is the authoritative usage
-            # source for this integration, so the duplicate estimate adds no value.
-            return 0.0
-
-        costs_module.estimate_embedding_cost = disabled_upstream_cost_estimate
-        costs_module.estimate_llm_cost = disabled_upstream_cost_estimate
-        # compression imported this symbol directly, so patch its local binding too.
-        compression_module.estimate_embedding_cost = disabled_upstream_cost_estimate
-
-        if not hasattr(DeepResearchSkill, "_owui_original_generate_search_queries"):
-            original_generate_search_queries = DeepResearchSkill.generate_search_queries
-            DeepResearchSkill._owui_original_generate_search_queries = (
-                original_generate_search_queries
-            )
-
-            async def resilient_generate_search_queries(
-                self: Any, query: str, num_queries: int = 3
-            ) -> list[dict[str, str]]:
-                generated = await self._owui_original_generate_search_queries(
-                    query, num_queries=num_queries
-                )
-                return ensure_search_queries(generated, query)
-
-            DeepResearchSkill.generate_search_queries = resilient_generate_search_queries
-
-        if not hasattr(report_generation, "_owui_original_create_chat_completion"):
-            report_generation._owui_original_create_chat_completion = (
-                report_generation.create_chat_completion
-            )
-
-            async def non_streaming_report_completion(*args: Any, **kwargs: Any) -> str:
-                # The accounting gateway returns one JSON completion so it can
-                # record provider usage atomically. Upstream report writers ask
-                # LangChain for SSE chunks; preserve their string contract here.
-                kwargs["stream"] = False
-                result = await report_generation._owui_original_create_chat_completion(
-                    *args, **kwargs
-                )
-                return str(result)
-
-            report_generation.create_chat_completion = non_streaming_report_completion
+        configure_upstream(
+            spec,
+            public_search_enabled=self.public_search_enabled,
+            retriever=self.retriever,
+            scraper=self.scraper,
+            scraper_page_timeout_seconds=self.scraper_page_timeout_seconds,
+            crawler_proxy_url=self.crawler_proxy_url,
+            public_retriever=GatewaySearxRetriever,
+            private_retriever=OpenWebUIRetriever,
+        )

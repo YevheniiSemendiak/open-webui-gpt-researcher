@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import requests
 from pydantic import ValidationError
 
 from open_webui_gpt_researcher.config import Settings
@@ -24,11 +25,14 @@ from open_webui_gpt_researcher.engines import (
     OpenWebUIRetriever,
     ProgressEmitter,
     ResearchBatchTracker,
-    bounded_browser_scrape,
     deduplicate_sources,
     ensure_iteration_summary,
-    ensure_search_queries,
     normalize_progress_update,
+)
+from open_webui_gpt_researcher.upstream import (
+    ProxyTimeoutSession,
+    bounded_browser_scrape,
+    ensure_search_queries,
     sanitize_browser_scrape_result,
 )
 
@@ -568,6 +572,10 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     from gpt_researcher.utils import costs
     from zendriver.core.connection import Transaction
 
+    native_embedding_cost = costs.estimate_embedding_cost
+    native_llm_cost = costs.estimate_llm_cost
+    native_compression_embedding_cost = compression.estimate_embedding_cost
+
     spec = RunnerJobSpec(
         id=uuid4(),
         query="configuration test",
@@ -584,9 +592,9 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     assert NoDriverScraper.max_browsers == 1
     assert hasattr(NoDriverScraper, "_owui_original_scrape_async")
     assert hasattr(Transaction, "_owui_original_call")
-    assert costs.estimate_embedding_cost(model="unused", docs=["unused"]) == 0.0
-    assert costs.estimate_llm_cost("unused", "unused") == 0.0
-    assert compression.estimate_embedding_cost(model="unused", docs=["unused"]) == 0.0
+    assert costs.estimate_embedding_cost is native_embedding_cost
+    assert costs.estimate_llm_cost is native_llm_cost
+    assert compression.estimate_embedding_cost is native_compression_embedding_cost
     from gpt_researcher.skills.deep_research import DeepResearchSkill
 
     assert hasattr(DeepResearchSkill, "_owui_original_generate_search_queries")
@@ -645,6 +653,95 @@ async def test_browser_scrape_timeout_retires_browser_and_drops_source() -> None
     assert result == ("", [], "")
     assert retired
     assert cancelled
+
+
+def test_proxy_timeout_session_applies_proxy_and_default_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def request(
+        self: requests.Session, method: str, url: str, **kwargs: object
+    ) -> requests.Response:
+        del self, method, url
+        captured.update(kwargs)
+        return requests.Response()
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    session = ProxyTimeoutSession("socks5h://proxy:1080", 45)
+
+    session.get("https://example.com")
+
+    assert session.proxies["https"] == "socks5h://proxy:1080"
+    assert captured["timeout"] == (10.0, 45)
+
+
+def test_proxy_scraper_adapters_are_conditional() -> None:
+    from gpt_researcher.scraper.scraper import Scraper
+
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine(crawler_proxy_url="socks5h://proxy:1080")._configure_upstream(spec)
+    proxied = Scraper([], "test-agent", "nodriver", None)
+    assert isinstance(proxied.session, ProxyTimeoutSession)
+
+    GPTResearcherEngine(crawler_proxy_url=None)._configure_upstream(spec)
+    direct = Scraper([], "test-agent", "nodriver", None)
+    assert type(direct.session) is requests.Session
+
+
+def test_proxy_aware_arxiv_scraper_reuses_bounded_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import arxiv
+    from gpt_researcher.scraper.arxiv.arxiv import ArxivScraper
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, *, num_retries: int) -> None:
+            captured["num_retries"] = num_retries
+            self._session: requests.Session | None = None
+
+        def results(self, search: object) -> Any:
+            del search
+            captured["session"] = self._session
+            paper = SimpleNamespace(
+                authors=[SimpleNamespace(name="Researcher")],
+                published=None,
+                title="Paper",
+                summary="Evidence",
+            )
+            return iter([paper])
+
+    monkeypatch.setattr(arxiv, "Client", FakeClient)
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine(crawler_proxy_url="socks5h://proxy:1080")._configure_upstream(spec)
+
+    content, images, title = ArxivScraper("https://arxiv.org/abs/2401.00001").scrape()
+
+    assert captured["num_retries"] == 0
+    assert isinstance(captured["session"], ProxyTimeoutSession)
+    assert content == "Published: ; Author: Researcher; Content: Evidence"
+    assert images == []
+    assert title == "Paper"
 
 
 def test_upstream_retriever_factory_propagates_private_sources_to_children() -> None:

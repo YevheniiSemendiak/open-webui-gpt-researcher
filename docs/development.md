@@ -162,11 +162,10 @@ When Kubernetes schemas are available, also validate rendered resources with `ku
 - GPT Researcher is pinned to an exact source revision; review upstream changes before advancing
   it.
 
-GPT Researcher's built-in dollar-cost estimates are disabled by the runtime adapter. They are
-duplicate telemetry in this integration: model calls pass through Open WebUI, whose provider usage
-is authoritative. Disabling the estimates also prevents `tiktoken` from synchronously downloading
-encoding vocabularies during a research Job. This does not disable model token accounting or
-context-window validation performed by the gateway.
+GPT Researcher's native cost estimator remains enabled. Its `tiktoken` dependency may download an
+encoding vocabulary on first use, so production egress must permit that request or the required
+vocabulary must be present in the image/cache before a restricted-egress Job starts. Open WebUI
+provider usage remains authoritative for this integration's enforced token accounting.
 
 ## Releases
 
