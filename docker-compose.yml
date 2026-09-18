@@ -81,7 +81,7 @@ services:
         && mc mb --ignore-existing local/research-artifacts
 
   searxng:
-    image: ${SEARXNG_IMAGE:-searxng/searxng:latest@sha256:f1aca3f61c7ff4552b8d54c0ab7fb458e907b78f51c503210cf450c900adca2c}
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest@sha256:dea38477e0c07f96176921d7fca5d0d77761026b2a753d6f39893c6f8ef376f4}
     environment:
       SEARXNG_BASE_URL: http://localhost:8080/
       SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
