@@ -3,9 +3,21 @@ from __future__ import annotations
 from uuid import uuid4
 
 import httpx
+import pytest
 
 from open_webui_gpt_researcher.domain import RunnerCompletion
 from open_webui_gpt_researcher.runner import RunnerClient
+
+
+async def test_runner_client_initializes_with_socks_proxy_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "socks5h://proxy:1080")
+    monkeypatch.setenv("HTTPS_PROXY", "socks5h://proxy:1080")
+    monkeypatch.setenv("NO_PROXY", "api,.svc,.svc.cluster.local")
+
+    client = RunnerClient(base_url="http://api", job_id=uuid4(), token="token")
+    await client.close()
 
 
 async def test_runner_client_protocol() -> None:
