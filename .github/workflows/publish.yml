@@ -44,12 +44,12 @@ jobs:
           - name: application
             file: Dockerfile
             image: ${{ needs.metadata.outputs.image }}
-            cache_scope: application
+            gha_cache_scope: buildkit
             description: Open WebUI integration for GPT Researcher
           - name: OpenVPN proxy
             file: Dockerfile.openvpn-proxy
             image: ${{ needs.metadata.outputs.openvpn_proxy_image }}
-            cache_scope: openvpn-proxy
+            gha_cache_scope: openvpn-proxy
             description: Optional OpenVPN and SOCKS proxy for Open WebUI GPT Researcher
     steps:
       - uses: actions/checkout@v7
@@ -85,8 +85,10 @@ jobs:
             VERSION=${{ needs.metadata.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.cache_scope }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
+          cache-from: |
+            type=registry,ref=${{ matrix.image }}:buildcache
+            type=gha,scope=${{ matrix.gha_cache_scope }}
+          cache-to: type=registry,ref=${{ matrix.image }}:buildcache,mode=max
       - uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ matrix.image }}
