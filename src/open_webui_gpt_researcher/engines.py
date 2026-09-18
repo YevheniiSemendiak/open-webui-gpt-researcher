@@ -519,6 +519,24 @@ class GPTResearcherEngine:
         if self.scraper == "nodriver":
             import zendriver
             from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
+            from zendriver.core.connection import Transaction
+
+            if not hasattr(Transaction, "_owui_original_call"):
+                Transaction._owui_original_call = Transaction.__call__
+
+                def ignore_late_response(self: Any, **response: dict[str, Any]) -> None:
+                    # A cancelled CDP request can remain in Zendriver's mapper until
+                    # Chrome answers it. Completing its already-done Future raises
+                    # InvalidStateError and otherwise kills the target listener loop.
+                    if self.done():
+                        return
+                    try:
+                        self._owui_original_call(**response)
+                    except asyncio.InvalidStateError:
+                        if not self.done():
+                            raise
+
+                Transaction.__call__ = ignore_late_response
 
             if _original_zendriver_config is None:
                 _original_zendriver_config = zendriver.Config

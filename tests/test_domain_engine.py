@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -576,6 +577,7 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     from gpt_researcher.actions import report_generation
     from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
     from gpt_researcher.skills import browser
+    from zendriver.core.connection import Transaction
 
     spec = RunnerJobSpec(
         id=uuid4(),
@@ -592,6 +594,7 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     assert retrievers.SearxSearch is GatewaySearxRetriever
     assert NoDriverScraper.max_browsers == 1
     assert hasattr(NoDriverScraper, "_owui_original_scrape_async")
+    assert hasattr(Transaction, "_owui_original_call")
     assert hasattr(browser, "_owui_original_scrape_urls")
     from gpt_researcher.skills.deep_research import DeepResearchSkill
 
@@ -600,6 +603,19 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     browser_config = zendriver.Config(headless=True)
     assert browser_config.sandbox is False
     assert "--proxy-server=socks5://external-proxy:1080" in browser_config.browser_args
+
+
+def test_late_zendriver_response_does_not_kill_listener() -> None:
+    from zendriver.core.connection import Transaction
+
+    def command() -> Any:
+        response = yield {"method": "Runtime.evaluate", "params": {}}
+        return response
+
+    transaction = Transaction(command())
+    transaction.cancel()
+    transaction(result={"value": "late"})
+    assert transaction.cancelled()
 
 
 def test_browser_failures_are_not_accepted_as_source_content() -> None:
