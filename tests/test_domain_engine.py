@@ -24,7 +24,6 @@ from open_webui_gpt_researcher.engines import (
     OpenWebUIRetriever,
     ProgressEmitter,
     ResearchBatchTracker,
-    bound_scraped_results,
     bounded_browser_scrape,
     deduplicate_sources,
     ensure_iteration_summary,
@@ -465,17 +464,6 @@ def test_gateway_searx_retriever_routes_through_accounted_endpoint(
     assert GatewaySearxRetriever.requires_scraping is True
 
 
-def test_scraped_results_are_bounded_per_source_and_batch() -> None:
-    results = [
-        {"url": "https://one", "raw_content": "a" * 10},
-        {"url": "https://two", "raw_content": "b" * 10},
-        {"url": "https://three", "raw_content": "c" * 10},
-    ]
-    bounded = bound_scraped_results(results, per_source_chars=6, total_chars=10)
-    assert [len(item["raw_content"]) for item in bounded] == [6, 4]
-    assert results[0]["raw_content"] == "a" * 10
-
-
 def test_empty_generated_search_queries_fall_back_to_research_question() -> None:
     assert ensure_search_queries([], "  What   is Open WebUI?  ") == [
         {
@@ -575,8 +563,9 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     import zendriver
     from gpt_researcher import retrievers
     from gpt_researcher.actions import report_generation
+    from gpt_researcher.context import compression
     from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
-    from gpt_researcher.skills import browser
+    from gpt_researcher.utils import costs
     from zendriver.core.connection import Transaction
 
     spec = RunnerJobSpec(
@@ -595,7 +584,9 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     assert NoDriverScraper.max_browsers == 1
     assert hasattr(NoDriverScraper, "_owui_original_scrape_async")
     assert hasattr(Transaction, "_owui_original_call")
-    assert hasattr(browser, "_owui_original_scrape_urls")
+    assert costs.estimate_embedding_cost(model="unused", docs=["unused"]) == 0.0
+    assert costs.estimate_llm_cost("unused", "unused") == 0.0
+    assert compression.estimate_embedding_cost(model="unused", docs=["unused"]) == 0.0
     from gpt_researcher.skills.deep_research import DeepResearchSkill
 
     assert hasattr(DeepResearchSkill, "_owui_original_generate_search_queries")

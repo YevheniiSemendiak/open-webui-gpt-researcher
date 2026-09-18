@@ -132,27 +132,6 @@ class GatewaySearxRetriever:
         return payload if isinstance(payload, list) else []
 
 
-def bound_scraped_results(
-    results: list[dict[str, Any]], *, per_source_chars: int, total_chars: int
-) -> list[dict[str, Any]]:
-    """Bound untrusted page text before GPT Researcher can put it in an LLM prompt."""
-    bounded: list[dict[str, Any]] = []
-    remaining = total_chars
-    for item in results:
-        if not isinstance(item, dict) or remaining <= 0:
-            continue
-        copied = dict(item)
-        for key in ("raw_content", "content", "body"):
-            value = copied.get(key)
-            if isinstance(value, str):
-                value = value[: min(per_source_chars, remaining)]
-                copied[key] = value
-                remaining -= len(value)
-                break
-        bounded.append(copied)
-    return bounded
-
-
 def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dict[str, str]]:
     """Keep upstream deep research progressing when an LLM response parses empty."""
     if queries:
@@ -589,8 +568,20 @@ class GPTResearcherEngine:
             NoDriverScraper.max_browsers = 1
 
         from gpt_researcher.actions import report_generation
-        from gpt_researcher.skills import browser as browser_module
+        from gpt_researcher.context import compression as compression_module
         from gpt_researcher.skills.deep_research import DeepResearchSkill
+        from gpt_researcher.utils import costs as costs_module
+
+        def disabled_upstream_cost_estimate(*_: Any, **__: Any) -> float:
+            # GPT Researcher's dollar-cost telemetry loads tiktoken vocabularies
+            # synchronously on first use. Open WebUI is the authoritative usage
+            # source for this integration, so the duplicate estimate adds no value.
+            return 0.0
+
+        costs_module.estimate_embedding_cost = disabled_upstream_cost_estimate
+        costs_module.estimate_llm_cost = disabled_upstream_cost_estimate
+        # compression imported this symbol directly, so patch its local binding too.
+        compression_module.estimate_embedding_cost = disabled_upstream_cost_estimate
 
         if not hasattr(DeepResearchSkill, "_owui_original_generate_search_queries"):
             original_generate_search_queries = DeepResearchSkill.generate_search_queries
@@ -624,17 +615,3 @@ class GPTResearcherEngine:
                 return str(result)
 
             report_generation.create_chat_completion = non_streaming_report_completion
-
-        if not hasattr(browser_module, "_owui_original_scrape_urls"):
-            browser_module._owui_original_scrape_urls = browser_module.scrape_urls
-
-            async def bounded_scrape_urls(*args: Any, **kwargs: Any) -> tuple[list[Any], list[Any]]:
-                results, images = await browser_module._owui_original_scrape_urls(*args, **kwargs)
-                per_source = int(os.environ.get("MAX_SCRAPED_SOURCE_CHARS", "20000"))
-                total = int(os.environ.get("MAX_SCRAPED_BATCH_CHARS", "80000"))
-                return (
-                    bound_scraped_results(results, per_source_chars=per_source, total_chars=total),
-                    images,
-                )
-
-            browser_module.scrape_urls = bounded_scrape_urls
