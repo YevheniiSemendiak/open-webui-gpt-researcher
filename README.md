@@ -110,6 +110,8 @@ Follow [Installation and Open WebUI integration](docs/installation.md) for compl
 
 ## Documentation
 
+- [Deep Research user guide](docs/usage.md)
+- [Посібник користувача Deep Research українською](docs/usage-uk.md)
 - [Installation and Open WebUI integration](docs/installation.md)
 - [Development guide](docs/development.md)
 - [Architecture decisions](docs/adrs.md)

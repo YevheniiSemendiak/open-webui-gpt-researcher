@@ -51,6 +51,16 @@ def test_pipe_extracts_question_sources_and_user_limits() -> None:
     assert budget == {"max_queries": 7, "max_wall_time_seconds": 3_600}
 
 
+def test_pipe_bounds_long_request_preview_without_changing_short_requests() -> None:
+    pipe = Pipe()
+    short_request = "Investigate this request in full."
+    long_request = f"{'A' * 500}MIDDLE-CONTENT{'Z' * 500}"
+
+    assert pipe._request_preview(short_request) == short_request
+    assert pipe._request_preview(long_request) == f"{'A' * 500}\n...\n{'Z' * 500}"
+    assert "MIDDLE-CONTENT" not in pipe._request_preview(long_request)
+
+
 def test_pipe_resolves_presets_custom_shape_and_query_caps() -> None:
     pipe = Pipe()
     expected = {

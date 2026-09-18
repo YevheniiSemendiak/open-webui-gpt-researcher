@@ -160,15 +160,22 @@ class Pipe:
                     if self.valves.public_search_enabled
                     else f"only {source_summary} and {context_summary}; public web is disabled"
                 )
+                request_preview = self._request_preview(query)
+                request_label = (
+                    f"Request preview ({len(query):,} characters; "
+                    "the full request will be used unchanged)"
+                    if request_preview != query
+                    else "Request"
+                )
                 plan = (
-                    f"Question: {query}\n\n"
-                    f"Sources: {source_scope}\n\n"
-                    f"Limits: up to {budget['max_queries']} search queries "
-                    f"and {budget['max_wall_time_seconds'] // 60} minutes.\n\n"
+                    f"{request_label}:\n\n{request_preview}\n\n"
+                    f"Sources: {source_scope}.\n\n"
                     f"Research strategy: {research['strategy']} — breadth "
                     f"{research['breadth']}, depth {research['depth']}, "
                     f"{research['queries_per_branch']} queries per branch "
                     f"(up to {self._estimated_max_queries(research)} planned queries).\n\n"
+                    f"Limits: up to {budget['max_queries']} search queries "
+                    f"and {budget['max_wall_time_seconds'] // 60} minutes.\n\n"
                     f"Models: fast `{selected_models['fast']}`, "
                     f"smart `{selected_models['smart']}`, and "
                     f"strategic `{selected_models['strategic']}`."
@@ -747,6 +754,12 @@ class Pipe:
                 workers_at_level *= current_breadth
             total_workers += workers_at_level
         return 1 + total_workers * (int(research["queries_per_branch"]) + 2)
+
+    @staticmethod
+    def _request_preview(query: str, edge_chars: int = 500) -> str:
+        if len(query) <= edge_chars * 2:
+            return query
+        return f"{query[:edge_chars]}\n...\n{query[-edge_chars:]}"
 
     @staticmethod
     def _last_user_message(body: dict[str, Any]) -> str:
