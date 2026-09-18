@@ -118,6 +118,11 @@ make run-proxy
 `/etc/searxng/settings.yml` in the container. Credentials and client configuration are mounted at
 runtime and are not included in an image.
 
+The bundled proxy is fail-closed: its SOCKS server sends outbound traffic only through `tun0`,
+starts only after that interface exists, and exits if either OpenVPN or the tunnel disappears. A
+non-privileged Kubernetes deployment therefore needs `NET_ADMIN` and access to `/dev/net/tun`;
+using a privileged container only hides that device setup and grants substantially broader access.
+
 Production deployments can set `researchJob.env.CRAWLER_PROXY_URL` to an externally managed proxy
 or VPN gateway and configure SearXNG's `outgoing.proxies` to use it. The researcher chart does not
 deploy network egress infrastructure.
