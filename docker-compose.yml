@@ -6,6 +6,7 @@ x-research-environment: &research-environment
   OPENWEBUI_URL: http://open-webui:8080
   OPENWEBUI_TIMEOUT_SECONDS: ${OPENWEBUI_TIMEOUT_SECONDS:-600}
   ARTIFACT_BACKEND: s3
+  ARTIFACT_PREFIX: ${ARTIFACT_PREFIX:-}
   S3_ENDPOINT_URL: http://minio:9000
   S3_BUCKET: research-artifacts
   MODE: local

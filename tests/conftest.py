@@ -18,6 +18,7 @@ def settings(tmp_path: Path) -> Settings:
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite'}",
         artifact_backend="filesystem",
         artifact_path=str(tmp_path / "artifacts"),
+        artifact_prefix="test/researcher",
         openwebui_url="http://openwebui.invalid",
         openwebui_api_key="test-admin-key",
         service_token="test-service-token",

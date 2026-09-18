@@ -185,6 +185,7 @@ api:
     SEARX_URL: http://research-open-webui-gpt-researcher-searxng:8080
     S3_ENDPOINT_URL: https://s3.example.com
     S3_BUCKET: research-artifacts
+    ARTIFACT_PREFIX: openwebui/researcher
   envFrom:
     - secretRef:
         name: research-api
@@ -277,6 +278,7 @@ source:
           SEARX_URL: http://research-open-webui-gpt-researcher-searxng:8080
           S3_ENDPOINT_URL: https://s3.example.com
           S3_BUCKET: research-artifacts
+          ARTIFACT_PREFIX: openwebui/researcher
         envFrom:
           - secretRef:
               name: research-api
@@ -340,6 +342,9 @@ individual model request valid without prematurely reducing research quality.
 
 Scheduled cleanup removes expired events, artifacts, jobs, and orphaned objects. Retention is
 configured with `EVENT_RETENTION_DAYS`, `ARTIFACT_RETENTION_DAYS`, `JOB_RETENTION_DAYS`, and
-`ORPHAN_GRACE_SECONDS`.
+`ORPHAN_GRACE_SECONDS`. Set the optional `ARTIFACT_PREFIX` to a relative POSIX path when multiple
+deployments share a bucket. For example, `openwebui/researcher` stores objects below
+`openwebui/researcher/jobs/`. Keep the prefix stable so orphan cleanup continues to scan the same
+object namespace; database-referenced artifacts remain readable because their full keys are stored.
 
 For architecture and recovery semantics, see [Architecture decisions](adrs.md).

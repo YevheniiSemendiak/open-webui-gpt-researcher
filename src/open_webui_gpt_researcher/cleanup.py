@@ -96,7 +96,7 @@ class RetentionCleaner:
         async with self.database.session() as session:
             referenced = await self.repository.list_artifact_keys(session)
         deleted = 0
-        for stored in await self.artifact_store.list_objects("jobs"):
+        for stored in await self.artifact_store.list_objects(self.settings.artifact_jobs_prefix):
             if deleted >= self.settings.cleanup_batch_size:
                 break
             if stored.object_key in referenced or stored.last_modified >= cutoff:

@@ -492,7 +492,7 @@ def create_app(
             stored = {}
             for name, (content, media_type) in artifacts.items():
                 stored[name] = await artifact_store.put(
-                    f"jobs/{job_id}/attempts/{attempt}/{upload_id}/{name}",
+                    f"{settings.artifact_jobs_prefix}/{job_id}/attempts/{attempt}/{upload_id}/{name}",
                     content,
                     media_type,
                 )

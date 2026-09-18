@@ -64,6 +64,17 @@ def test_blank_reasoning_effort_is_unset() -> None:
     assert Settings(_env_file=None, reasoning_effort="high").reasoning_effort == "high"
 
 
+def test_artifact_prefix_is_normalized_and_scopes_jobs() -> None:
+    settings = Settings(_env_file=None, artifact_prefix=" shared//researcher/ ")
+    assert settings.artifact_prefix == "shared/researcher"
+    assert settings.artifact_jobs_prefix == "shared/researcher/jobs"
+    assert Settings(_env_file=None, artifact_prefix="").artifact_jobs_prefix == "jobs"
+
+    for invalid in ("/absolute", "../escape", "shared/../escape", r"shared\researcher"):
+        with pytest.raises(ValidationError, match="ARTIFACT_PREFIX"):
+            Settings(_env_file=None, artifact_prefix=invalid)
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [

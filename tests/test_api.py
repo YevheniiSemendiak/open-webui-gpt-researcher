@@ -171,6 +171,12 @@ async def test_job_lifecycle_and_artifact_download(
             session, job_id=UUID(job_id), user_id="user-1"
         )
         assert stored.runner_token_hash is None
+        artifacts = await app.state.repository.list_artifacts(session, job_id=UUID(job_id))
+        assert len(artifacts) == 4
+        assert all(
+            artifact.object_key.startswith(f"test/researcher/jobs/{job_id}/")
+            for artifact in artifacts
+        )
 
     malicious_completion = {
         "report_markdown": "# Replaced",
