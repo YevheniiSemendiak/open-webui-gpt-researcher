@@ -99,21 +99,6 @@ def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dic
     ]
 
 
-def continuation_query(spec: RunnerJobSpec) -> str:
-    if spec.iteration <= 1:
-        return f"<current_user_research_request>\n{spec.query}\n</current_user_research_request>"
-    return (
-        f"<current_user_research_request>\n{spec.query}\n</current_user_research_request>\n\n"
-        "<integration_instructions>\n"
-        f"This is iteration {spec.iteration} of an ongoing research thread. Use the supplied "
-        "Open WebUI conversation context and prior reports as evidence. Extend, correct, and "
-        "verify earlier findings instead of restarting the investigation. Produce a complete "
-        "revised report and include a section titled 'Changes since previous iteration' that "
-        "summarizes new evidence, corrected conclusions, contradictions, and remaining gaps.\n"
-        "</integration_instructions>"
-    )
-
-
 def deduplicate_sources(sources: list[dict[str, object]]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -360,9 +345,8 @@ class GPTResearcherEngine:
             pending_callbacks.add(task)
             task.add_done_callback(pending_callbacks.discard)
 
-        research_query = continuation_query(spec)
         researcher = GPTResearcher(
-            query=research_query,
+            query=spec.query,
             report_type=spec.report_type,
             verbose=True,
             websocket=telemetry,

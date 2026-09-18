@@ -23,7 +23,6 @@ from open_webui_gpt_researcher.engines import (
     ProgressEmitter,
     ResearchBatchTracker,
     bound_scraped_results,
-    continuation_query,
     deduplicate_sources,
     ensure_iteration_summary,
     ensure_search_queries,
@@ -163,7 +162,7 @@ def test_settings_resolve_role_specific_model_profile() -> None:
     )
 
 
-def test_continuation_query_and_source_deduplication() -> None:
+def test_iteration_summary_and_source_deduplication() -> None:
     spec = RunnerJobSpec(
         id=uuid4(),
         query="Expand the analysis",
@@ -175,10 +174,6 @@ def test_continuation_query_and_source_deduplication() -> None:
         report_type="deep",
         report_formats=["markdown"],
     )
-    continued = continuation_query(spec)
-    assert "Changes since previous iteration" in continued
-    assert "<current_user_research_request>\nExpand the analysis" in continued
-    assert "<integration_instructions>" in continued
     report = ensure_iteration_summary("# Revised report", spec)
     assert report.startswith("## Changes since previous iteration")
     assert "Expand the analysis" in report
@@ -272,10 +267,7 @@ async def test_gpt_researcher_adapter_merges_private_context(
     assert instances[0].retrievers[0] is GatewaySearxRetriever  # type: ignore[union-attr]
     assert OpenWebUIRetriever in instances[0].retrievers  # type: ignore[union-attr]
     assert instances[0].cfg.language == REPORT_LANGUAGE_POLICY  # type: ignore[union-attr]
-    assert instances[0].kwargs["query"] == (  # type: ignore[union-attr]
-        "<current_user_research_request>\nResearch with private context\n"
-        "</current_user_research_request>"
-    )
+    assert instances[0].kwargs["query"] == "Research with private context"  # type: ignore[union-attr]
 
 
 async def test_gpt_researcher_can_use_only_openwebui_sources(
