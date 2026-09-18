@@ -59,6 +59,7 @@
     }
   },
   "properties": {
+    "global": {"type": "object"},
     "nameOverride": {"type": "string"},
     "fullnameOverride": {"type": "string"},
     "api": {
