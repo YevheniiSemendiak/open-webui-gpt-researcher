@@ -64,5 +64,7 @@ def test_publish_workflow_does_not_use_checked_in_versions() -> None:
     assert "RELEASE_VERSION" not in workflow
     assert "file: ${{ matrix.file }}" in workflow
     assert "org.opencontainers.image.source=https://github.com/${{ github.repository }}" in workflow
+    assert "type=registry,ref=${{ matrix.image }}:buildcache" in workflow
+    assert "cache-to: type=gha" not in workflow
     assert '--version "$CHART_VERSION"' in workflow
     assert '--app-version "$CHART_VERSION"' in workflow
