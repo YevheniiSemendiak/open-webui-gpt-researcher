@@ -27,7 +27,7 @@ services:
       - firecrawl-postgres-data:/var/lib/postgresql/data
 
   firecrawl-redis:
-    image: redis:7.4-alpine
+    image: redis:8.10-alpine
     command: ["redis-server", "--bind", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
