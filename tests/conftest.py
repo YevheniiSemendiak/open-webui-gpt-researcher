@@ -21,7 +21,6 @@ def settings(tmp_path: Path) -> Settings:
         openwebui_url="http://openwebui.invalid",
         openwebui_api_key="test-admin-key",
         service_token="test-service-token",
-        signing_secret="test-signing-secret-with-more-than-32-bytes",
         auto_create_schema=True,
         mode="k8s",
         default_model_profiles={"default": "test-model"},

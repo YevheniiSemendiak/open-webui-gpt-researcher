@@ -77,6 +77,8 @@ spec:
               value: {{ .Values.researchJob.env | toJson | quote }}
             - name: RUNNER_ENV_FROM
               value: {{ .Values.researchJob.envFrom | toJson | quote }}
+            - name: RUNNER_EXTRA_ENV
+              value: {{ .Values.researchJob.extraEnv | toJson | quote }}
             - name: RUNNER_POD_LABELS
               value: {{ .Values.researchJob.podLabels | toJson | quote }}
             - name: RUNNER_POD_ANNOTATIONS
@@ -95,6 +97,9 @@ spec:
               value: {{ .Values.researchJob.extraVolumes | toJson | quote }}
             - name: RUNNER_EXTRA_VOLUME_MOUNTS
               value: {{ .Values.researchJob.extraVolumeMounts | toJson | quote }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.api.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

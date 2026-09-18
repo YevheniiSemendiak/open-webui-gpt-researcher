@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import hmac
-import json
-import time
 from dataclasses import dataclass
 
 from fastapi import Header, HTTPException, Request, status
@@ -34,36 +30,3 @@ def require_runner_token(authorization: str = Header()) -> str:
     if scheme.lower() != "bearer" or not value:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "runner bearer token required")
     return value
-
-
-def create_download_token(
-    *, secret: str, job_id: str, artifact_name: str, user_id: str, ttl_seconds: int
-) -> str:
-    payload = {
-        "artifact": artifact_name,
-        "exp": int(time.time()) + ttl_seconds,
-        "job": job_id,
-        "user": user_id,
-    }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    ).rstrip(b"=")
-    signature = hmac.new(secret.encode(), encoded, hashlib.sha256).digest()
-    return f"{encoded.decode()}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
-
-
-def verify_download_token(token: str, *, secret: str, job_id: str, artifact_name: str) -> str:
-    try:
-        encoded, signature_text = token.split(".", maxsplit=1)
-        signature = base64.urlsafe_b64decode(signature_text + "=" * (-len(signature_text) % 4))
-        expected = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
-        if not hmac.compare_digest(signature, expected):
-            raise ValueError
-        payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode())
-        if payload["job"] != job_id or payload["artifact"] != artifact_name:
-            raise ValueError
-        if int(payload["exp"]) < int(time.time()):
-            raise ValueError
-        return str(payload["user"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid download token") from error

@@ -1,9 +1,7 @@
 name: open-webui-deep-research
 
 x-research-environment: &research-environment
-  ENVIRONMENT: development
   DATABASE_URL: postgresql+asyncpg://research:research@postgres:5432/research
-  ARTIFACT_BASE_URL: http://localhost:8090
   INTERNAL_BASE_URL: http://api:8090
   OPENWEBUI_URL: http://open-webui:8080
   OPENWEBUI_TIMEOUT_SECONDS: ${OPENWEBUI_TIMEOUT_SECONDS:-600}
@@ -112,7 +110,6 @@ services:
     environment:
       <<: *research-environment
       SERVICE_TOKEN: ${SERVICE_TOKEN:-local-service-token-change-before-sharing}
-      SIGNING_SECRET: ${SIGNING_SECRET:-local-signing-secret-change-before-sharing-1234}
       OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
       S3_ACCESS_KEY_ID: minio
       S3_SECRET_ACCESS_KEY: minio-secret

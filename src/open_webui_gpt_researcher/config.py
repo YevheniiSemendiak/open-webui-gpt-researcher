@@ -20,14 +20,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    environment: str = "development"
     log_level: str = "INFO"
     database_url: str = "postgresql+asyncpg://research:research@postgres:5432/research"
     auto_create_schema: bool = False
-    artifact_base_url: str = "http://localhost:8090"
     internal_base_url: str = "http://api:8090"
     service_token: SecretStr = SecretStr("change-me-service-token")
-    signing_secret: SecretStr = SecretStr("change-me-signing-secret-at-least-32-bytes")
 
     openwebui_url: str = "http://open-webui:8080"
     openwebui_api_key: SecretStr = SecretStr("")
@@ -58,6 +55,7 @@ class Settings(BaseSettings):
     runner_backoff_limit: int = Field(default=0, ge=0)
     runner_env: dict[str, str | int | float | bool] = Field(default_factory=dict)
     runner_env_from: list[dict[str, object]] = Field(default_factory=list)
+    runner_extra_env: list[dict[str, object]] = Field(default_factory=list)
     runner_pod_labels: dict[str, str] = Field(default_factory=dict)
     runner_pod_annotations: dict[str, str] = Field(default_factory=dict)
     runner_node_selector: dict[str, str] = Field(default_factory=dict)
@@ -106,8 +104,6 @@ class Settings(BaseSettings):
     hard_max_queries: int = Field(default=100, ge=1)
     hard_max_wall_time_seconds: int = 7_200
 
-    download_token_ttl_seconds: int = Field(default=604_800, ge=60, le=2_592_000)
-
     event_retention_days: int = Field(default=30, ge=1, le=3_650)
     artifact_retention_days: int = Field(default=90, ge=1, le=3_650)
     job_retention_days: int = Field(default=90, ge=1, le=3_650)
@@ -119,6 +115,17 @@ class Settings(BaseSettings):
     def normalize_reasoning_effort(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_postgresql_database_url(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql+asyncpg://", 1)
         return value
 
     @field_validator("crawler_proxy_url", mode="before")
@@ -149,6 +156,12 @@ class Settings(BaseSettings):
         if conflict := reserved_env.intersection(self.runner_env):
             msg = f"RUNNER_ENV cannot override reserved values: {', '.join(sorted(conflict))}"
             raise ValueError(msg)
+        extra_env_names = {
+            item.get("name") for item in self.runner_extra_env if isinstance(item.get("name"), str)
+        }
+        if conflict := reserved_env.intersection(extra_env_names):
+            msg = f"RUNNER_EXTRA_ENV cannot override reserved values: {', '.join(sorted(conflict))}"
+            raise ValueError(msg)
         if any(volume.get("name") == "tmp" for volume in self.runner_extra_volumes):
             raise ValueError("RUNNER_EXTRA_VOLUMES cannot redefine the tmp volume")
         if any(
@@ -159,13 +172,8 @@ class Settings(BaseSettings):
         return self
 
     def validate_api_secrets(self) -> None:
-        if self.environment != "development":
-            if self.service_token.get_secret_value().startswith("change-me"):
-                msg = "SERVICE_TOKEN must be configured outside development"
-                raise ValueError(msg)
-            if self.signing_secret.get_secret_value().startswith("change-me"):
-                msg = "SIGNING_SECRET must be configured outside development"
-                raise ValueError(msg)
+        if self.service_token.get_secret_value().startswith("change-me"):
+            raise ValueError("SERVICE_TOKEN must be configured")
 
     def validate_budget(self, budget: ResearchBudget) -> None:
         """Reject user refinements above administrator-defined hard limits."""

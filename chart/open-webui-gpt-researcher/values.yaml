@@ -18,9 +18,6 @@ api:
     name: ""
     annotations: {}
   env:
-    ENVIRONMENT: production
-    # Optional browser-reachable base URL used only for signed artifact download links.
-    ARTIFACT_BASE_URL: ""
     OPENWEBUI_URL: http://open-webui.open-webui.svc.cluster.local:8080
     OPENWEBUI_TIMEOUT_SECONDS: 600
     FUNCTION_SOURCES_PATH: /app/openwebui_functions
@@ -56,6 +53,8 @@ api:
     CLEANUP_BATCH_SIZE: 100
   # Native Kubernetes EnvFromSource entries. Use externally managed Secrets or ConfigMaps.
   envFrom: []
+  # Native Kubernetes EnvVar entries, including valueFrom references.
+  extraEnv: []
   resources:
     requests:
       cpu: 100m
@@ -95,7 +94,6 @@ researchJob:
     name: ""
     annotations: {}
   env:
-    ENVIRONMENT: production
     PUBLIC_SEARCH_ENABLED: true
     RETRIEVER: searx
     SCRAPER: nodriver
@@ -104,6 +102,7 @@ researchJob:
     RUNNER_HEARTBEAT_SECONDS: 10
     RUNNER_CANCEL_POLL_SECONDS: 1
   envFrom: []
+  extraEnv: []
   activeDeadlineSeconds: 7200
   ttlSecondsAfterFinished: 3600
   backoffLimit: 0
@@ -133,10 +132,11 @@ researchJob:
   extraVolumes: []
   extraVolumeMounts: []
 
-# API companion jobs inherit api.image, api.env, api.envFrom, security, scheduling,
+# API companion jobs inherit api.image, api.env, api.extraEnv, api.envFrom, security, scheduling,
 # image pull secrets, extra volumes, and extra mounts.
 migration:
   enabled: true
+  extraEnv: []
   annotations:
     helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
@@ -153,6 +153,7 @@ migration:
 
 functionSync:
   enabled: true
+  extraEnv: []
   backoffLimit: 3
   ttlSecondsAfterFinished: 300
   resources:
@@ -165,6 +166,7 @@ functionSync:
 
 cleanup:
   enabled: true
+  extraEnv: []
   schedule: "17 * * * *"
   backoffLimit: 2
   ttlSecondsAfterFinished: 3600
@@ -192,6 +194,7 @@ searxng:
   env:
     SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
   envFrom: []
+  extraEnv: []
   config: |
     use_default_settings:
       engines:

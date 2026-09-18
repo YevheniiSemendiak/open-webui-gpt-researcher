@@ -54,7 +54,6 @@ class LocalProcessExecutor:
             "S3_ACCESS_KEY_ID",
             "S3_SECRET_ACCESS_KEY",
             "SERVICE_TOKEN",
-            "SIGNING_SECRET",
         ):
             environment.pop(secret_name, None)
         environment.update(
@@ -157,6 +156,9 @@ class KubernetesJobExecutor:
             )
             for key, value in settings.runner_env.items()
         ]
+        environment.extend(
+            _kubernetes_model(item, client.V1EnvVar) for item in settings.runner_extra_env
+        )
         environment.extend(
             [
                 client.V1EnvVar(name="JOB_ID", value=str(job_id)),

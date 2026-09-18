@@ -64,6 +64,31 @@ def test_blank_reasoning_effort_is_unset() -> None:
     assert Settings(_env_file=None, reasoning_effort="high").reasoning_effort == "high"
 
 
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        (
+            {"service_token": "change-me-service-token"},
+            "SERVICE_TOKEN must be configured",
+        ),
+    ],
+)
+def test_api_rejects_placeholder_secrets(override: dict[str, str], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        Settings(_env_file=None, **override).validate_api_secrets()
+
+
+def test_native_postgresql_database_url_uses_asyncpg() -> None:
+    assert (
+        Settings(_env_file=None, database_url="postgresql://user:pass@postgres/db").database_url
+        == "postgresql+asyncpg://user:pass@postgres/db"
+    )
+    assert (
+        Settings(_env_file=None, database_url="postgres://user:pass@postgres/db").database_url
+        == "postgresql+asyncpg://user:pass@postgres/db"
+    )
+
+
 def test_research_limits_reject_removed_token_budget_fields() -> None:
     with pytest.raises(ValidationError, match="max_input_tokens"):
         ResearchBudget.model_validate({"max_input_tokens": 120_000})

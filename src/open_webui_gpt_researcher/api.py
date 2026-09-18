@@ -18,13 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from . import __version__
 from .artifacts import ArtifactStore, FilesystemArtifactStore, S3ArtifactStore
-from .auth import (
-    OpenWebUIPrincipal,
-    create_download_token,
-    require_openwebui_principal,
-    require_runner_token,
-    verify_download_token,
-)
+from .auth import OpenWebUIPrincipal, require_openwebui_principal, require_runner_token
 from .config import Settings, get_settings
 from .controller import Controller
 from .db import Database, ResearchJob
@@ -296,31 +290,6 @@ def create_app(
         except JobNotFoundError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
 
-    @app.get("/v1/research-jobs/{job_id}/artifacts/{artifact_name}")
-    async def download_artifact(
-        job_id: UUID,
-        artifact_name: str,
-        token: str = Query(),
-    ) -> Response:
-        user_id = verify_download_token(
-            token,
-            secret=settings.signing_secret.get_secret_value(),
-            job_id=str(job_id),
-            artifact_name=artifact_name,
-        )
-        try:
-            async with database.session() as session:
-                await repository.get_for_user(session, job_id=job_id, user_id=user_id)
-                artifact = await repository.get_artifact(session, job_id=job_id, name=artifact_name)
-            content = await artifact_store.get(artifact.object_key)
-        except (JobNotFoundError, FileNotFoundError) as error:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "artifact not found") from error
-        return Response(
-            content,
-            media_type=artifact.media_type,
-            headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'},
-        )
-
     @app.get("/v1/research-jobs/{job_id}/artifacts")
     async def list_job_artifacts(job_id: UUID, principal: Principal) -> list[dict[str, object]]:
         try:
@@ -533,13 +502,8 @@ def create_app(
                 )
                 if job.state != JobState.RUNNING.value:
                     raise InvalidStateError(f"cannot complete job in state {job.state}")
-                links = {
-                    name: url
-                    for name in stored
-                    if (url := _download_url(settings, job, name)) is not None
-                }
                 result: dict[str, object] = {
-                    "artifacts": links,
+                    "artifact_names": list(stored),
                     "source_count": len(completion.sources),
                 }
                 job = await repository.mark_completed(
@@ -736,22 +700,6 @@ async def _runner_job(
 def _ensure_active(job: ResearchJob) -> None:
     if JobState(job.state) in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
         raise HTTPException(status.HTTP_409_CONFLICT, "job is terminal")
-
-
-def _download_url(settings: Settings, job: ResearchJob, name: str) -> str | None:
-    if not settings.artifact_base_url:
-        return None
-    token = create_download_token(
-        secret=settings.signing_secret.get_secret_value(),
-        job_id=job.id,
-        artifact_name=name,
-        user_id=job.user_id,
-        ttl_seconds=settings.download_token_ttl_seconds,
-    )
-    return (
-        f"{settings.artifact_base_url.rstrip('/')}/v1/research-jobs/{job.id}/artifacts/"
-        f"{name}?token={token}"
-    )
 
 
 async def _publish_completion(

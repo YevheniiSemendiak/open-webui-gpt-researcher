@@ -118,9 +118,9 @@ make run-proxy
 `/etc/searxng/settings.yml` in the container. Credentials and client configuration are mounted at
 runtime and are not included in an image.
 
-Production deployments can instead set `researchJob.env.CRAWLER_PROXY_URL` and configure
-SearXNG's `outgoing.proxies` to use an externally managed proxy or VPN gateway. The Helm chart does
-not deploy that gateway.
+Production deployments can set `researchJob.env.CRAWLER_PROXY_URL` to an externally managed proxy
+or VPN gateway and configure SearXNG's `outgoing.proxies` to use it. The researcher chart does not
+deploy network egress infrastructure.
 
 ## Kubernetes installation
 
@@ -144,7 +144,6 @@ names, including:
 
 - `DATABASE_URL`
 - `SERVICE_TOKEN`
-- `SIGNING_SECRET`
 - `OPENWEBUI_API_KEY`
 - `S3_ACCESS_KEY_ID`
 - `S3_SECRET_ACCESS_KEY`
@@ -152,6 +151,25 @@ names, including:
 The API and embedded controller share `DATABASE_URL`. Bundled SearXNG normally receives
 `SEARXNG_SECRET` through `searxng.envFrom`. Research Jobs do not receive provider credentials;
 model and embedding requests always pass through Open WebUI.
+
+Use `extraEnv` when a key must be renamed, or when only selected keys from a pre-existing Secret
+should be exposed. `api.extraEnv`, `researchJob.extraEnv`, and `searxng.extraEnv` accept native
+Kubernetes `EnvVar` objects, including `valueFrom`:
+
+```yaml
+api:
+  extraEnv:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: openwebui-postgres-pguser-openwebui
+          key: uri
+```
+
+Native `postgresql://` and legacy `postgres://` values are normalized to the async PostgreSQL
+driver internally. Migration, Function sync, and cleanup inherit `api.extraEnv`, just as they
+inherit `api.env` and `api.envFrom`; their own `extraEnv` lists can add lifecycle-specific values.
+Dynamic research Jobs receive `researchJob.extraEnv`.
 
 Create a production values file:
 
@@ -203,10 +221,10 @@ Function sync publishes a namespace-qualified cluster DNS address for the gatewa
 WebUI runs in another namespace and the chart NetworkPolicy is enabled, allow that namespace to
 reach the API port through `networkPolicy.additionalIngress`, as in the example above.
 
-Configuration is grouped under `api`, `researchJob`, and `searxng`. Controller settings are part of
-`api.env`. Migration, Function sync, and cleanup inherit the API image, environment, `envFrom`,
-security contexts, scheduling, image-pull secrets, volumes, and mounts. Their own values control
-lifecycle, resources, and scheduling.
+Configuration is grouped under `api`, `researchJob`, and `searxng`. Controller settings are part
+of `api.env`. Migration, Function sync, and cleanup inherit the API image, environment,
+`extraEnv`, `envFrom`, security contexts, scheduling, image-pull secrets, volumes, and mounts.
+Their own values control lifecycle and resources.
 
 `migration.annotations` defaults to Helm pre-install/pre-upgrade hook annotations. Override its
 entries when the deployment controller needs different lifecycle annotations. Because Helm merges
@@ -295,9 +313,6 @@ integration.
 No public ingress is required for the research gateway. The Pipe uses the cluster-private API and,
 on completion, uploads artifacts to Open WebUI with the initiating user's authorization. Open
 WebUI then renders native file cards and applies ordinary ownership checks.
-
-`api.env.ARTIFACT_BASE_URL` is only for direct API clients that explicitly require signed download
-URLs. Chat rendering does not use it.
 
 ## Streaming and timeouts
 

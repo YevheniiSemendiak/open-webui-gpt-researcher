@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
+import pytest
 from kubernetes_asyncio.client.exceptions import ApiException
 
 from open_webui_gpt_researcher.config import Settings
@@ -98,6 +99,17 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
             "PUBLIC_SEARCH_ENABLED": True,
         },
         runner_env_from=[{"secretRef": {"name": "provider-credentials"}}],
+        runner_extra_env=[
+            {
+                "name": "CUSTOM_RUNTIME_SETTING",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "research-runner-settings",
+                        "key": "custom-setting",
+                    }
+                },
+            }
+        ],
         runner_pod_labels={"workload.example/tier": "research"},
         runner_pod_annotations={"workload.example/managed": "true"},
         runner_node_selector={"workload.example/pool": "research"},
@@ -138,6 +150,9 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
     assert env["SEARX_URL"] == "http://searxng:8080"
     assert env["CRAWLER_PROXY_URL"] == "socks5://external-proxy:1080"
     assert env["PUBLIC_SEARCH_ENABLED"] == "true"
+    custom_setting = next(item for item in container.env if item.name == "CUSTOM_RUNTIME_SETTING")
+    assert custom_setting.value_from.secret_key_ref.name == "research-runner-settings"
+    assert custom_setting.value_from.secret_key_ref.key == "custom-setting"
     assert job.metadata.labels["job-attempt"] == "3"
     assert job.metadata.name.endswith("-3")
     assert await executor.inspect(job_id=job_id, attempt=3) == DispatchStatus.ACTIVE
@@ -147,6 +162,12 @@ async def test_kubernetes_executor_builds_hardened_job(monkeypatch: Any) -> None
     assert submitted["delete"] == ("research", job.metadata.name, "Background")
     assert container.env_from[0].secret_ref.name == "provider-credentials"
     assert isinstance(make_executor(settings), KubernetesJobExecutor)
+
+
+def test_runner_extra_env_cannot_override_scoped_runtime_values() -> None:
+    for name in ("JOB_ID", "RUNNER_TOKEN", "INTERNAL_BASE_URL"):
+        with pytest.raises(ValueError, match="RUNNER_EXTRA_ENV cannot override reserved values"):
+            Settings(runner_extra_env=[{"name": name, "value": "unsafe"}])
 
 
 async def test_kubernetes_executor_treats_conflict_as_idempotent_and_detects_missing(

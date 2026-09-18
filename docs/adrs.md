@@ -232,8 +232,8 @@ public ingress and bypass Open WebUI's ordinary ownership experience.
 
 - No public gateway ingress is required for chat usage.
 - Open WebUI controls file visibility and download authorization.
-- Signed gateway artifact URLs remain available only for direct API clients that explicitly enable
-  `ARTIFACT_BASE_URL`.
+- Artifact content is available only through the authenticated cluster-private API used by the
+  Open WebUI Pipe and Action.
 
 ## ADR-014: Report progress through stable integration events
 
