@@ -56,6 +56,18 @@
         "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
         "resources": {"$ref": "#/$defs/resources"}
       }
+    },
+    "migrationJob": {
+      "allOf": [
+        {"$ref": "#/$defs/companionJob"},
+        {
+          "type": "object",
+          "required": ["annotations"],
+          "properties": {
+            "annotations": {"$ref": "#/$defs/stringMap"}
+          }
+        }
+      ]
     }
   },
   "properties": {
@@ -117,7 +129,7 @@
         "extraVolumeMounts": {"$ref": "#/$defs/objectArray"}
       }
     },
-    "migration": {"$ref": "#/$defs/companionJob"},
+    "migration": {"$ref": "#/$defs/migrationJob"},
     "functionSync": {"$ref": "#/$defs/companionJob"},
     "cleanup": {
       "type": "object",

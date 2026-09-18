@@ -208,6 +208,11 @@ Configuration is grouped under `api`, `researchJob`, and `searxng`. Controller s
 security contexts, scheduling, image-pull secrets, volumes, and mounts. Their own values control
 lifecycle, resources, and scheduling.
 
+`migration.annotations` defaults to Helm pre-install/pre-upgrade hook annotations. Override its
+entries when the deployment controller needs different lifecycle annotations. Because Helm merges
+maps, remove the default hook behavior by setting each `helm.sh/*` entry to `null`; the chart then
+renders the migration as an ordinary Job.
+
 Research Jobs are always available when the gateway runs and have no separate `enabled` switch.
 They use a non-root, read-only security context, scoped per-job credentials, resource limits,
 deadlines, and TTL cleanup.

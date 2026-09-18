@@ -137,6 +137,10 @@ researchJob:
 # image pull secrets, extra volumes, and extra mounts.
 migration:
   enabled: true
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "-1"
   backoffLimit: 3
   ttlSecondsAfterFinished: 600
   resources:
