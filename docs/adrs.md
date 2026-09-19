@@ -301,6 +301,19 @@ evidence-driven stopping rule: cover every requested aspect supported by the gat
 avoid repetition and padding, and then conclude. The adapter removes the upstream minimum-word
 instruction so its built-in default does not become an implicit report-size control.
 
+## ADR-019: Preserve streaming across the model gateway
+
+**Status:** Accepted
+
+When GPT Researcher requests a streaming chat completion, the research gateway passes Open
+WebUI's server-sent events through without buffering the complete response. This is particularly
+important for final report generation, where GPT Researcher submits the aggregated research
+context in one request and generation may take several minutes.
+
+The gateway requests usage in the final stream event and accounts it after the stream closes. If
+the provider omits usage, the gateway conservatively estimates input and output tokens from the
+request and streamed content. Non-streaming callers retain the existing JSON response path.
+
 ## Recovery and retention consequences
 
 Dispatch leases recover a gateway failure before a runner starts. Active runners persist

@@ -542,6 +542,61 @@ async def test_model_and_embedding_proxies_account_usage(
         assert job.usage["estimated_token_calls"] == 0
 
 
+async def test_model_proxy_preserves_streaming_and_accounts_final_usage(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+    job_payload: dict[str, object],
+) -> None:
+    client, app = api_client
+    created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
+    job_id = created.json()["id"]
+    async with app.state.database.session() as session, session.begin():
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
+    assert claim is not None
+    runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
+    stream_body = b"".join(
+        [
+            b'data: {"choices":[{"delta":{"content":"streamed "}}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\n',
+            b'data: {"choices":[],"usage":{"prompt_tokens":41,"completion_tokens":2}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    app.state.openwebui.proxy_chat_completions_stream = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_body,
+        )
+    )
+
+    response = await client.post(
+        f"/internal/jobs/{job_id}/openai/v1/chat/completions",
+        headers=runner_headers,
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "question"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == stream_body
+    assert response.headers["content-type"].startswith("text/event-stream")
+    proxied = app.state.openwebui.proxy_chat_completions_stream.await_args.kwargs["payload"]
+    assert proxied["stream"] is True
+    assert proxied["stream_options"] == {"include_usage": True}
+    async with app.state.database.session() as session:
+        job = await app.state.repository.get_for_runner(
+            session, job_id=claim.id, runner_token=claim.runner_token
+        )
+        assert job.usage["input_tokens"] == 41
+        assert job.usage["output_tokens"] == 2
+        assert job.usage["estimated_token_calls"] == 0
+
+
 async def test_embedding_proxy_batches_large_requests_and_preserves_order(
     api_client: tuple[httpx.AsyncClient, Any],
     service_headers: dict[str, str],

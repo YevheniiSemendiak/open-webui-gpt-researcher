@@ -14,9 +14,6 @@ from .domain import RunnerJobSpec
 _original_zendriver_config: Callable[..., Any] | None = None
 _zendriver_proxy_url: str | None = None
 _scraper_page_timeout_seconds = 120.0
-_nodriver_max_concurrency = 2
-_nodriver_semaphore: asyncio.Semaphore | None = None
-_nodriver_semaphore_loop: asyncio.AbstractEventLoop | None = None
 _original_get_retrievers: Callable[..., list[type[Any]]] | None = None
 _job_retrievers: tuple[type[Any], ...] = ()
 _crawler_proxy_url: str | None = None
@@ -109,16 +106,6 @@ async def bounded_browser_scrape(
     if task not in done:
         task.add_done_callback(_consume_background_task)
     return "", [], ""
-
-
-def _get_nodriver_semaphore() -> asyncio.Semaphore:
-    """Return the process-wide page limiter for the active runner event loop."""
-    global _nodriver_semaphore, _nodriver_semaphore_loop
-    loop = asyncio.get_running_loop()
-    if _nodriver_semaphore is None or _nodriver_semaphore_loop is not loop:
-        _nodriver_semaphore = asyncio.Semaphore(_nodriver_max_concurrency)
-        _nodriver_semaphore_loop = loop
-    return _nodriver_semaphore
 
 
 def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dict[str, str]]:
@@ -285,15 +272,11 @@ def _configure_nodriver() -> None:
         scraper_class._owui_original_scrape_async = scraper_class.scrape_async
 
         async def scrape_with_timeout(self: Any) -> tuple[str, list[dict[str, Any]], str]:
-            # Upstream WorkerPools are per child researcher, so their limits add
-            # together during deep research. Bound pages across the whole runner
-            # process to keep Chromium's aggregate tab memory predictable.
-            async with _get_nodriver_semaphore():
-                result = await bounded_browser_scrape(
-                    self._owui_original_scrape_async(),
-                    timeout_seconds=_scraper_page_timeout_seconds,
-                    on_timeout=lambda: _retire_nodriver_browsers(NoDriverScraper),
-                )
+            result = await bounded_browser_scrape(
+                self._owui_original_scrape_async(),
+                timeout_seconds=_scraper_page_timeout_seconds,
+                on_timeout=lambda: _retire_nodriver_browsers(NoDriverScraper),
+            )
             if not result[0]:
                 NoDriverScraper.logger.warning(
                     "NoDriver scrape failed or timed out after %.1f seconds for %s",
@@ -303,7 +286,6 @@ def _configure_nodriver() -> None:
             return result
 
         scraper_class.scrape_async = scrape_with_timeout
-    scraper_class.max_browsers = 1
 
 
 def configure_upstream(
@@ -313,21 +295,16 @@ def configure_upstream(
     retriever: str,
     scraper: str,
     scraper_page_timeout_seconds: float,
-    nodriver_max_concurrency: int,
     crawler_proxy_url: str | None,
     public_retriever: type[Any],
     private_retriever: type[Any],
 ) -> None:
     """Apply isolated compatibility and safety adapters to the pinned upstream package."""
-    global _crawler_proxy_url, _job_retrievers, _nodriver_max_concurrency
-    global _nodriver_semaphore, _original_get_retrievers
+    global _crawler_proxy_url, _job_retrievers, _original_get_retrievers
     global _scraper_page_timeout_seconds, _zendriver_proxy_url
     _crawler_proxy_url = crawler_proxy_url
     _zendriver_proxy_url = crawler_proxy_url
     _scraper_page_timeout_seconds = scraper_page_timeout_seconds
-    if nodriver_max_concurrency != _nodriver_max_concurrency:
-        _nodriver_semaphore = None
-    _nodriver_max_concurrency = nodriver_max_concurrency
 
     loaded = sys.modules.get("gpt_researcher")
     if loaded is not None and not hasattr(loaded, "__path__"):

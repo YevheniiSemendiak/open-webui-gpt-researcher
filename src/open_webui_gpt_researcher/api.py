@@ -615,15 +615,66 @@ def create_app(
                 found_output_limit = True
         if not found_output_limit:
             request_payload["max_tokens"] = output_limit
+        allowed_models = {
+            model_roles.fast,
+            model_roles.smart,
+            model_roles.strategic,
+        }
+        if payload.get("stream") is True:
+            request_payload["stream"] = True
+            stream_options = request_payload.get("stream_options")
+            request_payload["stream_options"] = {
+                **(stream_options if isinstance(stream_options, dict) else {}),
+                "include_usage": True,
+            }
+            try:
+                response = await openwebui.proxy_chat_completions_stream(
+                    payload=request_payload,
+                    allowed_models=allowed_models,
+                    default_model=model_roles.smart,
+                )
+            except OpenWebUIError as error:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+
+            async def stream_completion() -> AsyncIterator[bytes]:
+                captured = bytearray()
+                try:
+                    async for chunk in response.aiter_bytes():
+                        captured.extend(chunk)
+                        yield chunk
+                finally:
+                    await response.aclose()
+                    input_tokens, output_tokens, estimated_usage = _stream_usage(
+                        bytes(captured),
+                        estimated_input=estimated_input,
+                    )
+                    try:
+                        async with database.session() as session, session.begin():
+                            await repository.consume_usage(
+                                session,
+                                job_id=job_id,
+                                runner_token=runner_token,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                estimated_token_calls=int(estimated_usage),
+                            )
+                    except Exception as error:
+                        log.warning(
+                            "chat_stream.usage_accounting_failed",
+                            job_id=str(job_id),
+                            error=str(error),
+                        )
+
+            return StreamingResponse(
+                stream_completion(),
+                media_type=response.headers.get("content-type", "text/event-stream"),
+            )
+
         request_payload["stream"] = False
         try:
             response = await openwebui.proxy_chat_completions(
                 payload=request_payload,
-                allowed_models={
-                    model_roles.fast,
-                    model_roles.smart,
-                    model_roles.strategic,
-                },
+                allowed_models=allowed_models,
                 default_model=model_roles.smart,
             )
         except OpenWebUIError as error:
@@ -727,6 +778,52 @@ def _estimate_output_tokens(payload: object) -> int:
         return 0
     serialized = json.dumps(choices, ensure_ascii=False, default=str)
     return math.ceil(len(serialized.encode("utf-8")) / 3) if serialized else 0
+
+
+def _stream_usage(body: bytes, *, estimated_input: int) -> tuple[int, int, bool]:
+    """Extract usage from an OpenAI SSE stream, with conservative fallbacks."""
+    reported_input: object = None
+    reported_output: object = None
+    output_parts: list[str] = []
+    for raw_line in body.splitlines():
+        if not raw_line.startswith(b"data:"):
+            continue
+        data = raw_line.removeprefix(b"data:").strip()
+        if not data or data == b"[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            reported_input = usage.get("prompt_tokens", usage.get("input_tokens"))
+            reported_output = usage.get("completion_tokens", usage.get("output_tokens"))
+        choices = event.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                output_parts.append(delta["content"])
+
+    input_tokens = (
+        int(reported_input) if isinstance(reported_input, (int, str)) else estimated_input
+    )
+    output_text = "".join(output_parts)
+    output_tokens = (
+        int(reported_output)
+        if isinstance(reported_output, (int, str))
+        else math.ceil(len(output_text.encode("utf-8")) / 3)
+    )
+    estimated = not isinstance(reported_input, (int, str)) or not isinstance(
+        reported_output, (int, str)
+    )
+    return input_tokens, output_tokens, estimated
 
 
 async def _runner_job(
