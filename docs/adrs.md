@@ -291,6 +291,16 @@ image tags.
 - A publishing-workflow fix requires a tag on a commit containing that fix; changing the branch
   does not alter the workflow associated with an existing tag.
 
+## ADR-018: Size reports from evidence coverage
+
+**Status:** Accepted
+
+Research breadth, depth, and queries per branch control evidence collection. Report length is not
+a user or infrastructure limit. The integration supplements the upstream prompt with an
+evidence-driven stopping rule: cover every requested aspect supported by the gathered evidence,
+avoid repetition and padding, and then conclude. The adapter removes the upstream minimum-word
+instruction so its built-in default does not become an implicit report-size control.
+
 ## Recovery and retention consequences
 
 Dispatch leases recover a gateway failure before a runner starts. Active runners persist

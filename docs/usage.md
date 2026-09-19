@@ -207,6 +207,13 @@ The `custom` strategy exposes these controls:
 The resolved research shape is shown before the run starts. If it does not fit within
 `Max queries`, increase that value or reduce breadth, depth, or queries per branch.
 
+## Report length
+
+Report length is determined automatically. The writer is instructed to cover every requested
+aspect supported by the gathered evidence, avoid padding and repetition, and stop when that
+coverage is complete. A broader or deeper research strategy gathers more evidence; it does not
+impose a fixed report size.
+
 ## Model selection
 
 After the request is submitted, Deep Research asks you to select accessible models for three

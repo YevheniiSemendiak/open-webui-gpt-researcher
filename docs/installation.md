@@ -352,6 +352,10 @@ Administrator hard caps validate the values again at submission. Configure caps 
 - `HARD_MAX_QUERIES`
 - `HARD_MAX_WALL_TIME_SECONDS`
 
+`EMBEDDING_BATCH_SIZE` limits how many text chunks the gateway sends to Open WebUI in one
+embeddings request. The default is `32`; lower it when the configured embedding backend has a
+smaller batch limit. This does not truncate source text.
+
 The integration does not impose aggregate input- or output-token budgets on a research run. It
 uses each selected model's frozen `context_length` and `max_output_tokens` metadata to keep every
 individual model request valid without prematurely reducing research quality.

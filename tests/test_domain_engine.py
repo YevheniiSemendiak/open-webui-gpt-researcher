@@ -30,7 +30,9 @@ from open_webui_gpt_researcher.engines import (
     normalize_progress_update,
 )
 from open_webui_gpt_researcher.upstream import (
+    REPORT_COMPLETENESS_POLICY,
     ProxyTimeoutSession,
+    add_report_completeness_policy,
     bounded_browser_scrape,
     ensure_search_queries,
     sanitize_browser_scrape_result,
@@ -62,6 +64,17 @@ def test_settings_validate_budget_and_default_profile() -> None:
         settings.resolve_default_models("missing")
     with pytest.raises(ValueError, match="max_queries"):
         settings.validate_budget(ResearchBudget(max_queries=101))
+
+
+def test_report_completeness_policy_is_adaptive_and_idempotent() -> None:
+    original = "Write a report with a minimum length of 2500 words."
+    augmented = add_report_completeness_policy(original)
+
+    assert "minimum length" not in augmented
+    assert REPORT_COMPLETENESS_POLICY in augmented
+    assert "as many words as necessary" in augmented
+    assert "Do not pad" in augmented
+    assert add_report_completeness_policy(augmented) == augmented
 
 
 def test_blank_reasoning_effort_is_unset() -> None:
@@ -735,6 +748,7 @@ def test_proxy_timeout_session_applies_proxy_and_default_timeout(
 
 
 def test_proxy_scraper_adapters_are_conditional() -> None:
+    from gpt_researcher.prompts import PromptFamily
     from gpt_researcher.scraper.scraper import Scraper
 
     spec = RunnerJobSpec(
@@ -748,6 +762,14 @@ def test_proxy_scraper_adapters_are_conditional() -> None:
         report_formats=["markdown"],
     )
     GPTResearcherEngine(crawler_proxy_url="socks5h://proxy:1080")._configure_upstream(spec)
+    prompt = PromptFamily.generate_deep_research_prompt(
+        "question",
+        "evidence",
+        "web",
+        total_words=2_500,
+    )
+    assert "minimum length of 2500 words" not in prompt
+    assert REPORT_COMPLETENESS_POLICY in prompt
     proxied = Scraper([], "test-agent", "nodriver", None)
     assert isinstance(proxied.session, ProxyTimeoutSession)
 

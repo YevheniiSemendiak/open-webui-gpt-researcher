@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -19,6 +20,13 @@ _nodriver_semaphore_loop: asyncio.AbstractEventLoop | None = None
 _original_get_retrievers: Callable[..., list[type[Any]]] | None = None
 _job_retrievers: tuple[type[Any], ...] = ()
 _crawler_proxy_url: str | None = None
+
+REPORT_COMPLETENESS_POLICY = (
+    "Use as many words as necessary to fully cover every part of the user's research request "
+    "that is supported by the gathered evidence, and no more. Do not pad the report, repeat "
+    "points, or add generic background merely to increase its length. Once all requested aspects "
+    "have been addressed with appropriate evidence, conclude the report."
+)
 
 _BROWSER_FAILURE_MARKERS = (
     "cannot find default execution context",
@@ -126,6 +134,46 @@ def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dic
             "researchGoal": "Find authoritative evidence addressing the research question.",
         }
     ]
+
+
+def add_report_completeness_policy(prompt: str) -> str:
+    """Replace upstream word-count floors with an evidence-driven stopping rule."""
+    prompt = re.sub(
+        r"(?im)^\s*\d+\.\s+Have a minimum length of [\d,]+ words\s*$",
+        "",
+        prompt,
+    )
+    prompt = re.sub(
+        r"(?i)\s+(?:with|and have|have|has) a minimum length of [\d,]+ words\.?",
+        "",
+        prompt,
+    )
+    prompt = re.sub(
+        r"(?i)\s+and at least [\d,]+ words\.?",
+        ".",
+        prompt,
+    )
+    if REPORT_COMPLETENESS_POLICY in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{REPORT_COMPLETENESS_POLICY}\n"
+
+
+def _configure_report_prompt() -> None:
+    """Augment the pinned upstream report prompt without maintaining a fork."""
+    from gpt_researcher.prompts import PromptFamily
+
+    prompt_family: Any = PromptFamily
+    if hasattr(prompt_family, "_owui_original_generate_deep_research_prompt"):
+        return
+    prompt_family._owui_original_generate_deep_research_prompt = (
+        prompt_family.generate_deep_research_prompt
+    )
+
+    def evidence_sized_deep_report_prompt(*args: Any, **kwargs: Any) -> str:
+        prompt = prompt_family._owui_original_generate_deep_research_prompt(*args, **kwargs)
+        return add_report_completeness_policy(str(prompt))
+
+    prompt_family.generate_deep_research_prompt = staticmethod(evidence_sized_deep_report_prompt)
 
 
 def _install_proxy_scraper_adapters() -> None:
@@ -318,6 +366,8 @@ def configure_upstream(
 
     from gpt_researcher.actions import report_generation
     from gpt_researcher.skills.deep_research import DeepResearchSkill
+
+    _configure_report_prompt()
 
     skill_class: Any = DeepResearchSkill
     if not hasattr(skill_class, "_owui_original_generate_search_queries"):

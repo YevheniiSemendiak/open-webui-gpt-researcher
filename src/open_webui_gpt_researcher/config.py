@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     model_context_safety_tokens: int = Field(default=256, ge=0, le=8_192)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_batch_size: int = Field(default=32, ge=1, le=256)
     runner_cancel_poll_seconds: float = Field(default=1.0, ge=0.5)
     runner_cancel_grace_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
 

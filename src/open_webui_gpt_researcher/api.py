@@ -658,14 +658,58 @@ def create_app(
         job = await _runner_job(database, repository, job_id, runner_token)
         _ensure_active(job)
         try:
-            response = await openwebui.proxy_embeddings(
-                payload=payload, model=settings.embedding_model
+            data = await _proxy_embeddings_batched(
+                openwebui,
+                payload=payload,
+                model=settings.embedding_model,
+                batch_size=settings.embedding_batch_size,
             )
-            return JSONResponse(content=response.json())
+            return JSONResponse(content=data)
         except OpenWebUIError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
 
     return app
+
+
+async def _proxy_embeddings_batched(
+    client: OpenWebUIClient,
+    *,
+    payload: dict[str, Any],
+    model: str,
+    batch_size: int,
+) -> dict[str, Any]:
+    """Bound embedding request pressure without dropping or truncating source text."""
+    inputs = payload.get("input")
+    if not isinstance(inputs, list) or len(inputs) <= batch_size:
+        response = (await client.proxy_embeddings(payload=payload, model=model)).json()
+        if not isinstance(response, dict):
+            raise OpenWebUIError("Open WebUI returned an invalid embeddings response")
+        return response
+
+    combined: dict[str, Any] | None = None
+    combined_data: list[dict[str, Any]] = []
+    combined_usage: dict[str, int] = {}
+    for offset in range(0, len(inputs), batch_size):
+        batch_payload = {**payload, "input": inputs[offset : offset + batch_size]}
+        batch = (await client.proxy_embeddings(payload=batch_payload, model=model)).json()
+        if not isinstance(batch, dict) or not isinstance(batch.get("data"), list):
+            raise OpenWebUIError("Open WebUI returned an invalid embeddings response")
+        if combined is None:
+            combined = {key: value for key, value in batch.items() if key not in {"data", "usage"}}
+        for item in batch["data"]:
+            if not isinstance(item, dict):
+                raise OpenWebUIError("Open WebUI returned an invalid embedding item")
+            combined_data.append({**item, "index": len(combined_data)})
+        usage = batch.get("usage")
+        if isinstance(usage, dict):
+            for key, value in usage.items():
+                if isinstance(value, int):
+                    combined_usage[key] = combined_usage.get(key, 0) + value
+    result = combined or {}
+    result["data"] = combined_data
+    if combined_usage:
+        result["usage"] = combined_usage
+    return result
 
 
 def _estimate_input_tokens(payload: dict[str, Any]) -> int:
