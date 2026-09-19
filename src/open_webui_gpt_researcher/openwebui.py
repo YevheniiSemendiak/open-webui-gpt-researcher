@@ -85,6 +85,36 @@ class OpenWebUIClient:
         self._raise_for_status(response)
         return response
 
+    async def proxy_chat_completions_stream(
+        self,
+        *,
+        payload: dict[str, Any],
+        allowed_models: set[str],
+        default_model: str,
+    ) -> httpx.Response:
+        """Open an unbuffered OpenWebUI chat-completion response."""
+        requested_model = payload.get("model")
+        if requested_model not in allowed_models | {None}:
+            raise OpenWebUIError("runner attempted to use a model outside its frozen selection")
+        proxied = dict(payload)
+        proxied["model"] = requested_model or default_model
+        request = self._client.build_request(
+            "POST",
+            "/api/chat/completions",
+            json=proxied,
+        )
+        try:
+            response = await self._client.send(request, stream=True)
+        except httpx.HTTPError as error:
+            raise OpenWebUIError(f"Open WebUI request failed: {error}") from error
+        if response.is_error:
+            try:
+                body = (await response.aread()).decode(errors="replace")[:2_000]
+            finally:
+                await response.aclose()
+            raise OpenWebUIError(f"Open WebUI returned {response.status_code}: {body}")
+        return response
+
     async def proxy_embeddings(self, *, payload: dict[str, Any], model: str) -> httpx.Response:
         proxied = dict(payload)
         proxied["model"] = model

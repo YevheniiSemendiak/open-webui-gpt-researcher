@@ -542,6 +542,113 @@ async def test_model_and_embedding_proxies_account_usage(
         assert job.usage["estimated_token_calls"] == 0
 
 
+async def test_model_proxy_preserves_streaming_and_accounts_final_usage(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+    job_payload: dict[str, object],
+) -> None:
+    client, app = api_client
+    created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
+    job_id = created.json()["id"]
+    async with app.state.database.session() as session, session.begin():
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
+    assert claim is not None
+    runner_headers = {"Authorization": f"Bearer {claim.runner_token}"}
+    stream_body = b"".join(
+        [
+            b'data: {"choices":[{"delta":{"content":"streamed "}}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\n',
+            b'data: {"choices":[],"usage":{"prompt_tokens":41,"completion_tokens":2}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    app.state.openwebui.proxy_chat_completions_stream = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_body,
+        )
+    )
+
+    response = await client.post(
+        f"/internal/jobs/{job_id}/openai/v1/chat/completions",
+        headers=runner_headers,
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "question"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == stream_body
+    assert response.headers["content-type"].startswith("text/event-stream")
+    proxied = app.state.openwebui.proxy_chat_completions_stream.await_args.kwargs["payload"]
+    assert proxied["stream"] is True
+    assert proxied["stream_options"] == {"include_usage": True}
+    async with app.state.database.session() as session:
+        job = await app.state.repository.get_for_runner(
+            session, job_id=claim.id, runner_token=claim.runner_token
+        )
+        assert job.usage["input_tokens"] == 41
+        assert job.usage["output_tokens"] == 2
+        assert job.usage["estimated_token_calls"] == 0
+
+
+async def test_embedding_proxy_batches_large_requests_and_preserves_order(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+    job_payload: dict[str, object],
+) -> None:
+    client, app = api_client
+    created = await client.post("/v1/research-jobs", headers=service_headers, json=job_payload)
+    job_id = created.json()["id"]
+    async with app.state.database.session() as session, session.begin():
+        claim = await app.state.repository.claim_next(
+            session, max_concurrent_jobs=5, lease_seconds=120
+        )
+    assert claim is not None
+    app.state.settings.embedding_batch_size = 2
+    calls: list[list[str]] = []
+
+    async def proxy_embeddings(*, payload: dict[str, Any], model: str) -> httpx.Response:
+        batch = payload["input"]
+        calls.append(batch)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "model": model,
+                "data": [
+                    {"object": "embedding", "index": index, "embedding": [float(len(text))]}
+                    for index, text in enumerate(batch)
+                ],
+                "usage": {"prompt_tokens": len(batch), "total_tokens": len(batch)},
+            },
+        )
+
+    app.state.openwebui.proxy_embeddings = proxy_embeddings
+    response = await client.post(
+        f"/internal/jobs/{job_id}/openai/v1/embeddings",
+        headers={"Authorization": f"Bearer {claim.runner_token}"},
+        json={"input": ["a", "bb", "ccc", "dddd", "eeeee"]},
+    )
+    assert response.status_code == 200
+    assert calls == [["a", "bb"], ["ccc", "dddd"], ["eeeee"]]
+    payload = response.json()
+    assert [item["index"] for item in payload["data"]] == [0, 1, 2, 3, 4]
+    assert [item["embedding"] for item in payload["data"]] == [
+        [1.0],
+        [2.0],
+        [3.0],
+        [4.0],
+        [5.0],
+    ]
+    assert payload["usage"] == {"prompt_tokens": 5, "total_tokens": 5}
+
+
 async def test_model_proxy_estimates_usage_when_provider_omits_it(
     api_client: tuple[httpx.AsyncClient, Any],
     service_headers: dict[str, str],

@@ -53,6 +53,7 @@ async def run_runner() -> None:
             public_search_enabled=settings.public_search_enabled,
             retriever=settings.retriever,
             scraper=settings.scraper,
+            scraper_page_timeout_seconds=settings.scraper_page_timeout_seconds,
             crawler_proxy_url=settings.crawler_proxy_url,
         ),
     ).run()

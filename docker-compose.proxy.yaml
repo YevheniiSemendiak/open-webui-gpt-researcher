@@ -10,6 +10,7 @@ services:
     environment:
       OPENVPN_CONFIG_FILE: /vpn/${OPENVPN_CONFIG_NAME:-client.ovpn}
       OPENVPN_AUTH_FILE: /run/secrets/openvpn-auth
+      VPN_BYPASS_CIDRS: ${VPN_BYPASS_CIDRS:-}
     volumes:
       - type: bind
         source: ${OPENVPN_CONFIG_DIR:?set OPENVPN_CONFIG_DIR to the OpenVPN configuration directory}

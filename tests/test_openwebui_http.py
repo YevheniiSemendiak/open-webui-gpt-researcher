@@ -58,6 +58,28 @@ async def test_gateway_rejects_model_and_write_access() -> None:
     await client.close()
 
 
+async def test_gateway_streams_chat_completions_without_buffering() -> None:
+    body = b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat/completions"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    client = make_client(httpx.MockTransport(handler))
+    response = await client.proxy_chat_completions_stream(
+        payload={"model": "smart", "stream": True},
+        allowed_models={"smart"},
+        default_model="smart",
+    )
+    assert b"".join([chunk async for chunk in response.aiter_bytes()]) == body
+    await response.aclose()
+    await client.close()
+
+
 async def test_list_models_can_use_user_or_integration_authorization() -> None:
     requests: list[httpx.Request] = []
 

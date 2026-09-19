@@ -25,8 +25,14 @@ REASONING_EFFORT=low
 PUBLIC_SEARCH_ENABLED=true
 RETRIEVER=searx
 SCRAPER=nodriver
+SCRAPER_PAGE_TIMEOUT_SECONDS=120
 SEARX_URL=http://searxng:8080
 ```
+
+`SCRAPER_PAGE_TIMEOUT_SECONDS` bounds each browser-fetched source and proxy-routed Python fetcher
+(including ArXiv and PDF fetches). A source that times out is omitted and a stalled Chromium
+instance is recycled so the remaining research can continue. When `CRAWLER_PROXY_URL` is nonempty,
+the browser and supported Python fetchers use it; leaving it empty disables the proxy adapters.
 
 Apply the configuration and import or update the Open WebUI Pipe and Action:
 
@@ -106,7 +112,9 @@ Set:
 - `OPENVPN_CONFIG_DIR` to a directory containing the client configuration and referenced
   certificates;
 - `OPENVPN_AUTH_FILE` to a two-line file with the username followed by the password; and
-- optionally `OPENVPN_CONFIG_NAME`, which defaults to `client.ovpn`.
+- optionally `OPENVPN_CONFIG_NAME`, which defaults to `client.ovpn`;
+- optionally `VPN_BYPASS_CIDRS`, a comma- or whitespace-separated list of IPv4 CIDRs that must
+  remain reachable through the original network interface.
 
 `OPENVPN_CONFIG_DIR` and `OPENVPN_AUTH_FILE` are both required for this overlay. Start it with:
 
@@ -122,6 +130,10 @@ The bundled proxy is fail-closed: its SOCKS server sends outbound traffic only t
 starts only after that interface exists, and exits if either OpenVPN or the tunnel disappears. A
 non-privileged Kubernetes deployment therefore needs `NET_ADMIN` and access to `/dev/net/tun`;
 using a privileged container only hides that device setup and grants substantially broader access.
+The entrypoint automatically preserves the pre-VPN gateway and directly connected subnet. Routed
+pod or service networks cannot always be inferred from a container interface—for example, Calico
+commonly assigns pods a `/32`—so production deployments should supply those networks through
+`VPN_BYPASS_CIDRS`.
 
 Production deployments can set `researchJob.env.CRAWLER_PROXY_URL` to an externally managed proxy
 or VPN gateway and configure SearXNG's `outgoing.proxies` to use it. The researcher chart does not
@@ -335,6 +347,10 @@ Administrator hard caps validate the values again at submission. Configure caps 
 
 - `HARD_MAX_QUERIES`
 - `HARD_MAX_WALL_TIME_SECONDS`
+
+`EMBEDDING_BATCH_SIZE` limits how many text chunks the gateway sends to Open WebUI in one
+embeddings request. The default is `32`; lower it when the configured embedding backend has a
+smaller batch limit. This does not truncate source text.
 
 The integration does not impose aggregate input- or output-token budgets on a research run. It
 uses each selected model's frozen `context_length` and `max_output_tokens` metadata to keep every

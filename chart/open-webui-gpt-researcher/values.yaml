@@ -38,6 +38,7 @@ api:
     MODEL_CONTEXT_SAFETY_TOKENS: 256
     REASONING_EFFORT: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+    EMBEDDING_BATCH_SIZE: 32
     HARD_MAX_QUERIES: 100
     HARD_MAX_WALL_TIME_SECONDS: 7200
     MAX_CONCURRENT_JOBS: 5
@@ -98,10 +99,12 @@ researchJob:
     PUBLIC_SEARCH_ENABLED: true
     RETRIEVER: searx
     SCRAPER: nodriver
+    SCRAPER_PAGE_TIMEOUT_SECONDS: 120
     CRAWLER_PROXY_URL: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
     RUNNER_HEARTBEAT_SECONDS: 10
     RUNNER_CANCEL_POLL_SECONDS: 1
+    RUNNER_CANCEL_GRACE_SECONDS: 10
   envFrom: []
   extraEnv: []
   activeDeadlineSeconds: 7200
@@ -113,7 +116,7 @@ researchJob:
       memory: 512Mi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 6Gi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:

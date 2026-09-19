@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
+import requests
 from pydantic import ValidationError
 
 from open_webui_gpt_researcher.config import Settings
@@ -22,12 +25,17 @@ from open_webui_gpt_researcher.engines import (
     OpenWebUIRetriever,
     ProgressEmitter,
     ResearchBatchTracker,
-    bound_scraped_results,
-    continuation_query,
     deduplicate_sources,
     ensure_iteration_summary,
-    ensure_search_queries,
     normalize_progress_update,
+)
+from open_webui_gpt_researcher.upstream import (
+    REPORT_COMPLETENESS_POLICY,
+    ProxyTimeoutSession,
+    add_report_completeness_policy,
+    bounded_browser_scrape,
+    ensure_search_queries,
+    sanitize_browser_scrape_result,
 )
 
 TEST_MODELS = {"fast": "test-model", "smart": "test-model", "strategic": "test-model"}
@@ -58,10 +66,33 @@ def test_settings_validate_budget_and_default_profile() -> None:
         settings.validate_budget(ResearchBudget(max_queries=101))
 
 
+def test_report_completeness_policy_is_adaptive_and_idempotent() -> None:
+    original = "Write a report with a minimum length of 2500 words."
+    augmented = add_report_completeness_policy(original)
+
+    assert "minimum length" not in augmented
+    assert REPORT_COMPLETENESS_POLICY in augmented
+    assert "as many words as necessary" in augmented
+    assert "Do not pad" in augmented
+    assert add_report_completeness_policy(augmented) == augmented
+
+
 def test_blank_reasoning_effort_is_unset() -> None:
     assert Settings(_env_file=None, reasoning_effort="").reasoning_effort is None
     assert Settings(_env_file=None, reasoning_effort="  ").reasoning_effort is None
     assert Settings(_env_file=None, reasoning_effort="high").reasoning_effort == "high"
+
+
+def test_scraper_timeout_settings_are_bounded() -> None:
+    settings = Settings(
+        _env_file=None,
+        scraper_page_timeout_seconds=45,
+        runner_cancel_grace_seconds=3,
+    )
+    assert settings.scraper_page_timeout_seconds == 45
+    assert settings.runner_cancel_grace_seconds == 3
+    with pytest.raises(ValidationError, match="scraper_page_timeout_seconds"):
+        Settings(_env_file=None, scraper_page_timeout_seconds=5)
 
 
 def test_artifact_prefix_is_normalized_and_scopes_jobs() -> None:
@@ -163,7 +194,7 @@ def test_settings_resolve_role_specific_model_profile() -> None:
     )
 
 
-def test_continuation_query_and_source_deduplication() -> None:
+def test_iteration_summary_and_source_deduplication() -> None:
     spec = RunnerJobSpec(
         id=uuid4(),
         query="Expand the analysis",
@@ -175,10 +206,6 @@ def test_continuation_query_and_source_deduplication() -> None:
         report_type="deep",
         report_formats=["markdown"],
     )
-    continued = continuation_query(spec)
-    assert "Changes since previous iteration" in continued
-    assert "<current_user_research_request>\nExpand the analysis" in continued
-    assert "<integration_instructions>" in continued
     report = ensure_iteration_summary("# Revised report", spec)
     assert report.startswith("## Changes since previous iteration")
     assert "Expand the analysis" in report
@@ -272,10 +299,7 @@ async def test_gpt_researcher_adapter_merges_private_context(
     assert instances[0].retrievers[0] is GatewaySearxRetriever  # type: ignore[union-attr]
     assert OpenWebUIRetriever in instances[0].retrievers  # type: ignore[union-attr]
     assert instances[0].cfg.language == REPORT_LANGUAGE_POLICY  # type: ignore[union-attr]
-    assert instances[0].kwargs["query"] == (  # type: ignore[union-attr]
-        "<current_user_research_request>\nResearch with private context\n"
-        "</current_user_research_request>"
-    )
+    assert instances[0].kwargs["query"] == "Research with private context"  # type: ignore[union-attr]
 
 
 async def test_gpt_researcher_can_use_only_openwebui_sources(
@@ -457,17 +481,6 @@ def test_gateway_searx_retriever_routes_through_accounted_endpoint(
     assert GatewaySearxRetriever.requires_scraping is True
 
 
-def test_scraped_results_are_bounded_per_source_and_batch() -> None:
-    results = [
-        {"url": "https://one", "raw_content": "a" * 10},
-        {"url": "https://two", "raw_content": "b" * 10},
-        {"url": "https://three", "raw_content": "c" * 10},
-    ]
-    bounded = bound_scraped_results(results, per_source_chars=6, total_chars=10)
-    assert [len(item["raw_content"]) for item in bounded] == [6, 4]
-    assert results[0]["raw_content"] == "a" * 10
-
-
 def test_empty_generated_search_queries_fall_back_to_research_question() -> None:
     assert ensure_search_queries([], "  What   is Open WebUI?  ") == [
         {
@@ -567,8 +580,14 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     import zendriver
     from gpt_researcher import retrievers
     from gpt_researcher.actions import report_generation
+    from gpt_researcher.context import compression
     from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
-    from gpt_researcher.skills import browser
+    from gpt_researcher.utils import costs
+    from zendriver.core.connection import Transaction
+
+    native_embedding_cost = costs.estimate_embedding_cost
+    native_llm_cost = costs.estimate_llm_cost
+    native_compression_embedding_cost = compression.estimate_embedding_cost
 
     spec = RunnerJobSpec(
         id=uuid4(),
@@ -583,8 +602,11 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     GPTResearcherEngine(crawler_proxy_url="socks5://external-proxy:1080")._configure_upstream(spec)
 
     assert retrievers.SearxSearch is GatewaySearxRetriever
-    assert NoDriverScraper.max_browsers == 1
-    assert hasattr(browser, "_owui_original_scrape_urls")
+    assert hasattr(NoDriverScraper, "_owui_original_scrape_async")
+    assert hasattr(Transaction, "_owui_original_call")
+    assert costs.estimate_embedding_cost is native_embedding_cost
+    assert costs.estimate_llm_cost is native_llm_cost
+    assert compression.estimate_embedding_cost is native_compression_embedding_cost
     from gpt_researcher.skills.deep_research import DeepResearchSkill
 
     assert hasattr(DeepResearchSkill, "_owui_original_generate_search_queries")
@@ -592,6 +614,155 @@ def test_upstream_is_configured_for_accounted_search_and_hardened_browser() -> N
     browser_config = zendriver.Config(headless=True)
     assert browser_config.sandbox is False
     assert "--proxy-server=socks5://external-proxy:1080" in browser_config.browser_args
+
+
+async def test_late_zendriver_response_does_not_kill_listener() -> None:
+    from zendriver.core.connection import Transaction
+
+    def command() -> Any:
+        response = yield {"method": "Runtime.evaluate", "params": {}}
+        return response
+
+    transaction = Transaction(command())
+    transaction.cancel()
+    transaction(result={"value": "late"})
+    assert transaction.cancelled()
+
+
+def test_browser_failures_are_not_accepted_as_source_content() -> None:
+    failure = (
+        "Cannot find default execution context\ncommand:Runtime.evaluate [code: -32000]",
+        [{"url": "ignored"}],
+        "",
+    )
+    assert sanitize_browser_scrape_result(failure) == ("", [], "")
+    success = ("Useful source text", [{"url": "image"}], "Source title")
+    assert sanitize_browser_scrape_result(success) == success
+
+
+async def test_browser_scrape_timeout_retires_browser_and_drops_source() -> None:
+    retired = False
+    cancelled = False
+
+    async def stalled() -> tuple[str, list[dict[str, object]], str]:
+        nonlocal cancelled
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    async def retire() -> None:
+        nonlocal retired
+        retired = True
+
+    result = await bounded_browser_scrape(
+        stalled(),
+        timeout_seconds=0.01,
+        on_timeout=retire,
+    )
+
+    assert result == ("", [], "")
+    assert retired
+    assert cancelled
+
+
+def test_proxy_timeout_session_applies_proxy_and_default_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def request(
+        self: requests.Session, method: str, url: str, **kwargs: object
+    ) -> requests.Response:
+        del self, method, url
+        captured.update(kwargs)
+        return requests.Response()
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    session = ProxyTimeoutSession("socks5h://proxy:1080", 45)
+
+    session.get("https://example.com")
+
+    assert session.proxies["https"] == "socks5h://proxy:1080"
+    assert captured["timeout"] == (10.0, 45)
+
+
+def test_proxy_scraper_adapters_are_conditional() -> None:
+    from gpt_researcher.prompts import PromptFamily
+    from gpt_researcher.scraper.scraper import Scraper
+
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine(crawler_proxy_url="socks5h://proxy:1080")._configure_upstream(spec)
+    prompt = PromptFamily.generate_deep_research_prompt(
+        "question",
+        "evidence",
+        "web",
+        total_words=2_500,
+    )
+    assert "minimum length of 2500 words" not in prompt
+    assert REPORT_COMPLETENESS_POLICY in prompt
+    proxied = Scraper([], "test-agent", "nodriver", None)
+    assert isinstance(proxied.session, ProxyTimeoutSession)
+
+    GPTResearcherEngine(crawler_proxy_url=None)._configure_upstream(spec)
+    direct = Scraper([], "test-agent", "nodriver", None)
+    assert type(direct.session) is requests.Session
+
+
+def test_proxy_aware_arxiv_scraper_reuses_bounded_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import arxiv
+    from gpt_researcher.scraper.arxiv.arxiv import ArxivScraper
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, *, num_retries: int) -> None:
+            captured["num_retries"] = num_retries
+            self._session: requests.Session | None = None
+
+        def results(self, search: object) -> Any:
+            del search
+            captured["session"] = self._session
+            paper = SimpleNamespace(
+                authors=[SimpleNamespace(name="Researcher")],
+                published=None,
+                title="Paper",
+                summary="Evidence",
+            )
+            return iter([paper])
+
+    monkeypatch.setattr(arxiv, "Client", FakeClient)
+    spec = RunnerJobSpec(
+        id=uuid4(),
+        query="configuration test",
+        sources=[],
+        budget=ResearchBudget(),
+        models=TEST_MODELS,
+        model_capabilities=TEST_CAPABILITIES,
+        report_type="deep",
+        report_formats=["markdown"],
+    )
+    GPTResearcherEngine(crawler_proxy_url="socks5h://proxy:1080")._configure_upstream(spec)
+
+    content, images, title = ArxivScraper("https://arxiv.org/abs/2401.00001").scrape()
+
+    assert captured["num_retries"] == 0
+    assert isinstance(captured["session"], ProxyTimeoutSession)
+    assert content == "Published: ; Author: Researcher; Content: Evidence"
+    assert images == []
+    assert title == "Paper"
 
 
 def test_upstream_retriever_factory_propagates_private_sources_to_children() -> None:
