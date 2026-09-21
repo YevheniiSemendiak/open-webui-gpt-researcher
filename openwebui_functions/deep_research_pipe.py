@@ -295,10 +295,8 @@ class Pipe:
         for model in available:
             model_id = str(model["id"])
             available_ids.add(model_id)
-            openai_metadata = model.get("openai")
-            nested: dict[str, Any] = openai_metadata if isinstance(openai_metadata, dict) else {}
-            context_length = model.get("context_length") or nested.get("context_length")
-            max_output_tokens = model.get("max_output_tokens") or nested.get("max_output_tokens")
+            context_length = model.get("context_length")
+            max_output_tokens = model.get("max_output_tokens")
             if not isinstance(context_length, int) or not isinstance(max_output_tokens, int):
                 incomplete.add(model_id)
                 continue

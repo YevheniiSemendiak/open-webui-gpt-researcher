@@ -10,6 +10,20 @@ def test_values_schema_accepts_helm_inherited_globals() -> None:
     assert schema["properties"]["global"] == {"type": "object"}
 
 
+def test_values_schema_documents_models_info_json() -> None:
+    schema = json.loads((ROOT / "chart/open-webui-gpt-researcher/values.schema.json").read_text())
+
+    models_info = schema["$defs"]["modelsInfo"]
+    limits = schema["$defs"]["modelLimits"]
+    api_env = schema["properties"]["api"]["properties"]["env"]
+
+    assert models_info["additionalProperties"] == {"$ref": "#/$defs/modelLimits"}
+    assert limits["required"] == ["context_length", "max_output_tokens"]
+    assert limits["properties"]["context_length"]["minimum"] == 4096
+    assert limits["properties"]["max_output_tokens"]["minimum"] == 1
+    assert api_env["properties"]["MODELS_INFO"] == {"$ref": "#/$defs/modelsInfoJson"}
+
+
 def test_migration_annotations_are_configurable_and_safe_by_default() -> None:
     migration = (ROOT / "chart/open-webui-gpt-researcher/templates/migrate.yaml").read_text()
     values = (ROOT / "chart/open-webui-gpt-researcher/values.yaml").read_text()

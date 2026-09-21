@@ -13,6 +13,7 @@ from asgi_lifespan import LifespanManager
 from open_webui_gpt_researcher.api import _progress_description, create_app
 from open_webui_gpt_researcher.config import Settings
 from open_webui_gpt_researcher.controller import Controller
+from open_webui_gpt_researcher.domain import ModelLimits
 
 
 @pytest.mark.parametrize("mode", ["local", "k8s"])
@@ -112,6 +113,42 @@ async def test_model_catalog_intersects_user_access_with_authoritative_metadata(
         "authorization": "Bearer initiating-user"
     }
     assert app.state.openwebui.list_models.await_args_list[1].kwargs == {}
+
+
+async def test_model_catalog_fills_missing_limits_from_admin_fallback(
+    api_client: tuple[httpx.AsyncClient, Any],
+    service_headers: dict[str, str],
+) -> None:
+    client, app = api_client
+    app.state.settings.models_info = {
+        "allowed": ModelLimits(context_length=131_072, max_output_tokens=32_768),
+        "forbidden": ModelLimits(context_length=65_536, max_output_tokens=8_192),
+    }
+    app.state.openwebui.list_models = AsyncMock(
+        side_effect=[
+            [{"id": "allowed"}],
+            [
+                {"id": "allowed", "context_length": 128_000},
+                {"id": "forbidden"},
+            ],
+        ]
+    )
+
+    response = await client.get(
+        "/v1/models",
+        headers={**service_headers, "Authorization": "Bearer initiating-user"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "data": [
+            {
+                "id": "allowed",
+                "context_length": 128_000,
+                "max_output_tokens": 32_768,
+            }
+        ]
+    }
 
 
 async def test_job_lifecycle_and_artifact_download(

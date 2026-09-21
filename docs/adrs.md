@@ -135,11 +135,12 @@ Each run uses the initiating user's Open WebUI model catalog. The Pipe intersect
 IDs with authoritative metadata retrieved through the integration account. Users choose separate
 fast, smart, and strategic models before approval.
 
-When Open WebUI does not publish `context_length` and `max_output_tokens`, selecting that model
-requires the user to provide both values. Unknown values are a configuration error, not a reason to
-silently apply a guessed default.
+When Open WebUI does not publish `context_length` and `max_output_tokens`, an administrator may
+provide validated per-model fallback values through `MODELS_INFO`. Open WebUI-published values take
+precedence, and the fallback does not affect model visibility. If values remain unknown, selecting
+that model requires the user to provide both values; the integration never silently guesses them.
 
-The selected IDs and limits are frozen with the job. The researcher has no
+The selected IDs and limits are frozen with the job. The researcher has no global
 `MODEL_CONTEXT_WINDOWS` or `DEFAULT_MODEL_CONTEXT_WINDOW` fallback configuration.
 All model and embedding requests pass through Open WebUI. A direct provider route was rejected
 because it would create a second authorization and model-configuration authority.

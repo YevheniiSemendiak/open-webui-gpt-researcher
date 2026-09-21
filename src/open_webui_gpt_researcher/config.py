@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .domain import ModelRoles, ResearchBudget, ResearchShape
+from .domain import ModelLimits, ModelRoles, ResearchBudget, ResearchShape
 
 
 class Settings(BaseSettings):
@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     searx_url: str = "http://searxng:8080"
     crawler_proxy_url: str | None = None
     default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}
+    models_info: dict[str, ModelLimits] = Field(default_factory=dict)
     default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
     model_context_safety_tokens: int = Field(default=256, ge=0, le=8_192)
     reasoning_effort: Literal["low", "medium", "high"] | None = None

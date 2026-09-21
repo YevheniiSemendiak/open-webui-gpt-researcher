@@ -154,7 +154,19 @@ def create_app(
         except OpenWebUIError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
         accessible_ids = {str(item["id"]) for item in accessible}
-        resolved = [item for item in authoritative if str(item["id"]) in accessible_ids]
+        resolved: list[dict[str, Any]] = []
+        for item in authoritative:
+            model_id = str(item["id"])
+            if model_id not in accessible_ids:
+                continue
+            model = dict(item)
+            fallback = settings.models_info.get(model_id)
+            if fallback is not None:
+                if not isinstance(model.get("context_length"), int):
+                    model["context_length"] = fallback.context_length
+                if not isinstance(model.get("max_output_tokens"), int):
+                    model["max_output_tokens"] = fallback.max_output_tokens
+            resolved.append(model)
         log.info(
             "openwebui.model_catalog_resolved",
             user_id=principal.user_id,

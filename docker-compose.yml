@@ -17,6 +17,7 @@ x-research-environment: &research-environment
   SEARX_URL: ${SEARX_URL:-http://searxng:8080}
   CRAWLER_PROXY_URL: ${CRAWLER_PROXY_URL:-}
   DEFAULT_MODEL_PROFILES: '${DEFAULT_MODEL_PROFILES:-{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}}'
+  MODELS_INFO: '${MODELS_INFO:-{}}'
   DEFAULT_RESEARCH_STRATEGY: ${DEFAULT_RESEARCH_STRATEGY:-balanced}
   MODEL_CONTEXT_SAFETY_TOKENS: ${MODEL_CONTEXT_SAFETY_TOKENS:-256}
   REASONING_EFFORT: ${REASONING_EFFORT:-}

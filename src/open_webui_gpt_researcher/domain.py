@@ -61,6 +61,21 @@ class ModelCapability(BaseModel):
     max_output_tokens: int = Field(ge=1)
 
 
+class ModelLimits(BaseModel):
+    """Administrator-supplied fallback limits for one Open WebUI model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    context_length: int = Field(ge=4_096)
+    max_output_tokens: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_output_capacity(self) -> ModelLimits:
+        if self.max_output_tokens > self.context_length:
+            raise ValueError("max_output_tokens must not exceed context_length")
+        return self
+
+
 ResearchStrategy = Literal["focused", "balanced", "broad", "deep", "custom"]
 
 RESEARCH_PRESETS: dict[str, tuple[int, int, int]] = {

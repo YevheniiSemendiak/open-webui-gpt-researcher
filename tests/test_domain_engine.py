@@ -66,6 +66,24 @@ def test_settings_validate_budget_and_default_profile() -> None:
         settings.validate_budget(ResearchBudget(max_queries=101))
 
 
+def test_settings_parse_and_validate_model_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "MODELS_INFO",
+        '{"azure/glm-5.2":{"context_length":131072,"max_output_tokens":32768}}',
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.models_info["azure/glm-5.2"].context_length == 131_072
+    assert settings.models_info["azure/glm-5.2"].max_output_tokens == 32_768
+
+    with pytest.raises(ValidationError, match="must not exceed context_length"):
+        Settings(
+            _env_file=None,
+            models_info={"broken": {"context_length": 4_096, "max_output_tokens": 8_192}},
+        )
+
+
 def test_report_completeness_policy_is_adaptive_and_idempotent() -> None:
     original = "Write a report with a minimum length of 2500 words."
     augmented = add_report_completeness_policy(original)

@@ -21,6 +21,7 @@ Set the integration key and suggested models in `.env`:
 ```dotenv
 OPENWEBUI_API_KEY=...
 DEFAULT_MODEL_PROFILES={"default":{"fast":"fast-model-id","smart":"report-model-id","strategic":"planning-model-id"}}
+MODELS_INFO={"model-without-metadata":{"context_length":131072,"max_output_tokens":32768}}
 REASONING_EFFORT=low
 PUBLIC_SEARCH_ENABLED=true
 RETRIEVER=searx
@@ -74,15 +75,23 @@ Users choose separate IDs for GPT Researcher's `fast`, `smart` (report writing),
 (planning and analysis) roles for every run. The selected IDs and limits are frozen with the job.
 
 When Open WebUI publishes `context_length` and `max_output_tokens`, the integration uses them
-automatically. If either value is missing, the model remains selectable but Open WebUI asks the
-user to provide and confirm both limits for that run. The form requires:
+automatically. Administrators can fill missing values with the `MODELS_INFO` JSON object, keyed by
+the exact Open WebUI model ID. Published Open WebUI values always take precedence, and a map entry
+does not grant access to its model. For example:
+
+```dotenv
+MODELS_INFO={"azure/glm-5.2":{"context_length":131072,"max_output_tokens":32768}}
+```
+
+If either value remains missing, the model remains selectable but Open WebUI asks the user to
+provide and confirm both limits for that run. Configured and manually entered limits require:
 
 - a context window of at least 4,096 tokens;
 - a positive maximum output limit; and
 - an output limit no larger than the context window.
 
-Users must verify manually supplied values against the actual provider deployment. The researcher
-does not infer missing limits and has no administrator-maintained fallback map.
+Administrators and users must verify supplied values against the actual provider deployment. The
+researcher does not infer missing limits.
 
 For reasoning models, configure a large enough per-request maximum output for hidden reasoning
 tokens. Set
