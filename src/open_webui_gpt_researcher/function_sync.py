@@ -37,7 +37,7 @@ FUNCTION_SOURCES = (
         id="save_deep_research_to_knowledge",
         name="Deep Research Artifacts",
         filename="save_research_to_knowledge.py",
-        description="Attach completed artifacts or save a report to Open WebUI Knowledge.",
+        description="Save a completed research report to Open WebUI Knowledge.",
     ),
 )
 

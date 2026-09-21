@@ -86,6 +86,8 @@ gitignored `dev/searxng/settings.local.yml` unless `SEARXNG_SETTINGS_FILE` is se
 
 Use `make run-proxy` and `make stop-proxy`. Credential injection and operator-facing setup are
 documented in [Installation](installation.md#optional-proxy-hook-for-local-deployment).
+The proxy discovers its original gateway and directly connected subnet before OpenVPN starts.
+Use `VPN_BYPASS_CIDRS` for routed client networks that are not visible on the container interface.
 
 Keep the proxy optional. Production Helm templates expose proxy connection hooks but must not
 manage a VPN Deployment or its credentials.
@@ -159,6 +161,11 @@ When Kubernetes schemas are available, also validate rendered resources with `ku
   changing application source.
 - GPT Researcher is pinned to an exact source revision; review upstream changes before advancing
   it.
+
+GPT Researcher's native cost estimator remains enabled. Its `tiktoken` dependency may download an
+encoding vocabulary on first use, so production egress must permit that request or the required
+vocabulary must be present in the image/cache before a restricted-egress Job starts. Open WebUI
+provider usage remains authoritative for this integration's enforced token accounting.
 
 ## Releases
 

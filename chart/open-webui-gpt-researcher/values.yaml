@@ -34,10 +34,12 @@ api:
     SEARX_URL: http://searxng.searxng.svc.cluster.local:8080
     CRAWLER_PROXY_URL: ""
     DEFAULT_MODEL_PROFILES: '{"default":{"fast":"gpt-4.1-mini","smart":"gpt-4.1","strategic":"gpt-4.1"}}'
+    MODELS_INFO: '{}'
     DEFAULT_RESEARCH_STRATEGY: balanced
     MODEL_CONTEXT_SAFETY_TOKENS: 256
     REASONING_EFFORT: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+    EMBEDDING_BATCH_SIZE: 32
     HARD_MAX_QUERIES: 100
     HARD_MAX_WALL_TIME_SECONDS: 7200
     MAX_CONCURRENT_JOBS: 5
@@ -98,10 +100,12 @@ researchJob:
     PUBLIC_SEARCH_ENABLED: true
     RETRIEVER: searx
     SCRAPER: nodriver
+    SCRAPER_PAGE_TIMEOUT_SECONDS: 120
     CRAWLER_PROXY_URL: ""
     EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
     RUNNER_HEARTBEAT_SECONDS: 10
     RUNNER_CANCEL_POLL_SECONDS: 1
+    RUNNER_CANCEL_GRACE_SECONDS: 10
   envFrom: []
   extraEnv: []
   activeDeadlineSeconds: 7200
@@ -113,7 +117,7 @@ researchJob:
       memory: 512Mi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 6Gi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:

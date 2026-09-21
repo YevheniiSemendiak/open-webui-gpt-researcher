@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -160,15 +161,22 @@ class Pipe:
                     if self.valves.public_search_enabled
                     else f"only {source_summary} and {context_summary}; public web is disabled"
                 )
+                request_preview = self._request_preview(query)
+                request_label = (
+                    f"Request preview ({len(query):,} characters; "
+                    "the full request will be used unchanged)"
+                    if request_preview != query
+                    else "Request"
+                )
                 plan = (
-                    f"Question: {query}\n\n"
-                    f"Sources: {source_scope}\n\n"
-                    f"Limits: up to {budget['max_queries']} search queries "
-                    f"and {budget['max_wall_time_seconds'] // 60} minutes.\n\n"
+                    f"{request_label}:\n\n{request_preview}\n\n"
+                    f"Sources: {source_scope}.\n\n"
                     f"Research strategy: {research['strategy']} — breadth "
                     f"{research['breadth']}, depth {research['depth']}, "
                     f"{research['queries_per_branch']} queries per branch "
                     f"(up to {self._estimated_max_queries(research)} planned queries).\n\n"
+                    f"Limits: up to {budget['max_queries']} search queries "
+                    f"and {budget['max_wall_time_seconds'] // 60} minutes.\n\n"
                     f"Models: fast `{selected_models['fast']}`, "
                     f"smart `{selected_models['smart']}`, and "
                     f"strategic `{selected_models['strategic']}`."
@@ -287,10 +295,8 @@ class Pipe:
         for model in available:
             model_id = str(model["id"])
             available_ids.add(model_id)
-            openai_metadata = model.get("openai")
-            nested: dict[str, Any] = openai_metadata if isinstance(openai_metadata, dict) else {}
-            context_length = model.get("context_length") or nested.get("context_length")
-            max_output_tokens = model.get("max_output_tokens") or nested.get("max_output_tokens")
+            context_length = model.get("context_length")
+            max_output_tokens = model.get("max_output_tokens")
             if not isinstance(context_length, int) or not isinstance(max_output_tokens, int):
                 incomplete.add(model_id)
                 continue
@@ -519,94 +525,119 @@ class Pipe:
         }
         yield f"{started}\n\n"
         deadline = asyncio.get_running_loop().time() + max_wait_seconds
-        async with httpx.AsyncClient(timeout=30) as client:
-            while True:
-                try:
-                    response = await client.get(
-                        f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/{job_id}",
-                        headers=headers,
-                    )
-                    response.raise_for_status()
-                    job = response.json()
-                except httpx.HTTPError as error:
-                    if asyncio.get_running_loop().time() >= deadline:
-                        yield f"\n\nDeep Research could not retrieve the completed job: {error}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                while True:
+                    try:
+                        response = await client.get(
+                            f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/{job_id}",
+                            headers=headers,
+                        )
+                        response.raise_for_status()
+                        job = response.json()
+                    except httpx.HTTPError as error:
+                        if asyncio.get_running_loop().time() >= deadline:
+                            yield f"\n\nDeep Research could not retrieve the completed job: {error}"
+                            return
+                        yield ""
+                        await asyncio.sleep(self.valves.job_poll_interval_seconds)
+                        continue
+
+                    state = job.get("state")
+                    if state == "succeeded":
+                        attached_files: list[dict[str, Any]] = []
+                        attachment_error: str | None = None
+                        if event_emitter is not None:
+                            try:
+                                attached_files = await self._attach_artifacts(
+                                    client,
+                                    job_id=job_id,
+                                    user_id=user_id,
+                                    authorization=authorization,
+                                )
+                            except (
+                                httpx.HTTPError,
+                                KeyError,
+                                TypeError,
+                                ValueError,
+                                UnicodeDecodeError,
+                            ) as error:
+                                attachment_error = str(error)
+                        report = await client.get(
+                            f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/"
+                            f"{job_id}/artifacts/report.md/content",
+                            headers=headers,
+                        )
+                        report.raise_for_status()
+                        if attached_files and event_emitter is not None:
+                            await event_emitter(
+                                {"type": "files", "data": {"files": attached_files}}
+                            )
+                        if attachment_error and event_emitter is not None:
+                            await event_emitter(
+                                {
+                                    "type": "notification",
+                                    "data": {
+                                        "type": "warning",
+                                        "content": (
+                                            "The report completed, but its files could not be "
+                                            f"attached automatically: {attachment_error}"
+                                        ),
+                                    },
+                                }
+                            )
+                        if event_emitter is not None:
+                            await event_emitter(
+                                {
+                                    "type": "status",
+                                    "data": {
+                                        "description": "Deep research complete",
+                                        "done": True,
+                                        "job_id": job_id,
+                                    },
+                                }
+                            )
+                        yield report.text
                         return
+                    if state == "failed":
+                        failure_reason = str(job.get("error") or "the research worker failed")
+                        yield f"\n\nDeep Research failed: {failure_reason}"
+                        return
+                    if state == "cancelled":
+                        yield "\n\nDeep Research was cancelled."
+                        return
+                    if asyncio.get_running_loop().time() >= deadline:
+                        yield (
+                            "\n\nDeep Research is still running beyond this chat "
+                            "request's wait window. "
+                            f"The durable job is `{job_id}`."
+                        )
+                        return
+                    # Emit an empty OpenAI stream chunk as an application-level keepalive.
                     yield ""
                     await asyncio.sleep(self.valves.job_poll_interval_seconds)
-                    continue
+        except asyncio.CancelledError:
+            # Open WebUI cancels the pipe task when the user presses Stop. Leaving the chat
+            # does not cancel that server-side task, so it remains safe to map cancellation
+            # to the durable research job rather than abandoning a live Kubernetes runner.
+            cancel_task = asyncio.create_task(self._cancel_job(job_id=job_id, headers=headers))
+            try:
+                await asyncio.shield(cancel_task)
+            except asyncio.CancelledError:
+                # A repeated task cancellation must not cancel the control-plane request.
+                with suppress(httpx.HTTPError):
+                    await cancel_task
+            except httpx.HTTPError:
+                pass
+            raise
 
-                state = job.get("state")
-                if state == "succeeded":
-                    attached_files: list[dict[str, Any]] = []
-                    attachment_error: str | None = None
-                    if event_emitter is not None:
-                        try:
-                            attached_files = await self._attach_artifacts(
-                                client,
-                                job_id=job_id,
-                                user_id=user_id,
-                                authorization=authorization,
-                            )
-                        except (
-                            httpx.HTTPError,
-                            KeyError,
-                            TypeError,
-                            ValueError,
-                            UnicodeDecodeError,
-                        ) as error:
-                            attachment_error = str(error)
-                    report = await client.get(
-                        f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/"
-                        f"{job_id}/artifacts/report.md/content",
-                        headers=headers,
-                    )
-                    report.raise_for_status()
-                    if attached_files and event_emitter is not None:
-                        await event_emitter({"type": "files", "data": {"files": attached_files}})
-                    if attachment_error and event_emitter is not None:
-                        await event_emitter(
-                            {
-                                "type": "notification",
-                                "data": {
-                                    "type": "warning",
-                                    "content": (
-                                        "The report completed, but its files could not be "
-                                        f"attached automatically: {attachment_error}"
-                                    ),
-                                },
-                            }
-                        )
-                    if event_emitter is not None:
-                        await event_emitter(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "description": "Deep research complete",
-                                    "done": True,
-                                    "job_id": job_id,
-                                },
-                            }
-                        )
-                    yield report.text
-                    return
-                if state == "failed":
-                    failure_reason = str(job.get("error") or "the research worker failed")
-                    yield f"\n\nDeep Research failed: {failure_reason}"
-                    return
-                if state == "cancelled":
-                    yield "\n\nDeep Research was cancelled."
-                    return
-                if asyncio.get_running_loop().time() >= deadline:
-                    yield (
-                        "\n\nDeep Research is still running beyond this chat "
-                        "request's wait window. "
-                        f"The durable job is `{job_id}`."
-                    )
-                    return
-                # Emit an empty OpenAI stream chunk as an application-level keepalive.
-                yield ""
-                await asyncio.sleep(self.valves.job_poll_interval_seconds)
+    async def _cancel_job(self, *, job_id: str, headers: dict[str, str]) -> None:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/{job_id}:cancel",
+                headers=headers,
+            )
+            response.raise_for_status()
 
     async def _attach_artifacts(
         self,
@@ -747,6 +778,12 @@ class Pipe:
                 workers_at_level *= current_breadth
             total_workers += workers_at_level
         return 1 + total_workers * (int(research["queries_per_branch"]) + 2)
+
+    @staticmethod
+    def _request_preview(query: str, edge_chars: int = 500) -> str:
+        if len(query) <= edge_chars * 2:
+            return query
+        return f"{query[:edge_chars]}\n...\n{query[-edge_chars:]}"
 
     @staticmethod
     def _last_user_message(body: dict[str, Any]) -> str:

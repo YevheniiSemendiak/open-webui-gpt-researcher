@@ -25,6 +25,37 @@
       "type": "object",
       "additionalProperties": {"type": ["string", "number", "boolean"]}
     },
+    "modelLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_length", "max_output_tokens"],
+      "properties": {
+        "context_length": {
+          "type": "integer",
+          "minimum": 4096,
+          "description": "Maximum combined input and output context supported by the model."
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum output-token capacity supported by the model."
+        }
+      }
+    },
+    "modelsInfo": {
+      "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/modelLimits"}
+    },
+    "modelsInfoJson": {
+      "type": "string",
+      "contentMediaType": "application/json",
+      "contentSchema": {"$ref": "#/$defs/modelsInfo"},
+      "description": "JSON object mapping exact Open WebUI model IDs to fallback token limits.",
+      "examples": [
+        "{\"azure/glm-5.2\":{\"context_length\":262144,\"max_output_tokens\":262144}}"
+      ]
+    },
     "envFrom": {
       "type": "array",
       "items": {"type": "object"}
@@ -92,7 +123,12 @@
           }
         },
         "serviceAccount": {"$ref": "#/$defs/serviceAccount"},
-        "env": {"$ref": "#/$defs/env"},
+        "env": {
+          "allOf": [{"$ref": "#/$defs/env"}],
+          "properties": {
+            "MODELS_INFO": {"$ref": "#/$defs/modelsInfoJson"}
+          }
+        },
         "envFrom": {"$ref": "#/$defs/envFrom"},
         "extraEnv": {"$ref": "#/$defs/objectArray"},
         "resources": {"$ref": "#/$defs/resources"},

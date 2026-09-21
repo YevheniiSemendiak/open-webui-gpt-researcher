@@ -21,12 +21,19 @@ Set the integration key and suggested models in `.env`:
 ```dotenv
 OPENWEBUI_API_KEY=...
 DEFAULT_MODEL_PROFILES={"default":{"fast":"fast-model-id","smart":"report-model-id","strategic":"planning-model-id"}}
+MODELS_INFO={"model-without-metadata":{"context_length":131072,"max_output_tokens":32768}}
 REASONING_EFFORT=low
 PUBLIC_SEARCH_ENABLED=true
 RETRIEVER=searx
 SCRAPER=nodriver
+SCRAPER_PAGE_TIMEOUT_SECONDS=120
 SEARX_URL=http://searxng:8080
 ```
+
+`SCRAPER_PAGE_TIMEOUT_SECONDS` bounds each browser-fetched source and proxy-routed Python fetcher
+(including ArXiv and PDF fetches). A source that times out is omitted and a stalled Chromium
+instance is recycled so the remaining research can continue. When `CRAWLER_PROXY_URL` is nonempty,
+the browser and supported Python fetchers use it; leaving it empty disables the proxy adapters.
 
 Apply the configuration and import or update the Open WebUI Pipe and Action:
 
@@ -68,15 +75,23 @@ Users choose separate IDs for GPT Researcher's `fast`, `smart` (report writing),
 (planning and analysis) roles for every run. The selected IDs and limits are frozen with the job.
 
 When Open WebUI publishes `context_length` and `max_output_tokens`, the integration uses them
-automatically. If either value is missing, the model remains selectable but Open WebUI asks the
-user to provide and confirm both limits for that run. The form requires:
+automatically. Administrators can fill missing values with the `MODELS_INFO` JSON object, keyed by
+the exact Open WebUI model ID. Published Open WebUI values always take precedence, and a map entry
+does not grant access to its model. For example:
+
+```dotenv
+MODELS_INFO={"azure/glm-5.2":{"context_length":131072,"max_output_tokens":32768}}
+```
+
+If either value remains missing, the model remains selectable but Open WebUI asks the user to
+provide and confirm both limits for that run. Configured and manually entered limits require:
 
 - a context window of at least 4,096 tokens;
 - a positive maximum output limit; and
 - an output limit no larger than the context window.
 
-Users must verify manually supplied values against the actual provider deployment. The researcher
-does not infer missing limits and has no administrator-maintained fallback map.
+Administrators and users must verify supplied values against the actual provider deployment. The
+researcher does not infer missing limits.
 
 For reasoning models, configure a large enough per-request maximum output for hidden reasoning
 tokens. Set
@@ -106,7 +121,9 @@ Set:
 - `OPENVPN_CONFIG_DIR` to a directory containing the client configuration and referenced
   certificates;
 - `OPENVPN_AUTH_FILE` to a two-line file with the username followed by the password; and
-- optionally `OPENVPN_CONFIG_NAME`, which defaults to `client.ovpn`.
+- optionally `OPENVPN_CONFIG_NAME`, which defaults to `client.ovpn`;
+- optionally `VPN_BYPASS_CIDRS`, a comma- or whitespace-separated list of IPv4 CIDRs that must
+  remain reachable through the original network interface.
 
 `OPENVPN_CONFIG_DIR` and `OPENVPN_AUTH_FILE` are both required for this overlay. Start it with:
 
@@ -122,6 +139,10 @@ The bundled proxy is fail-closed: its SOCKS server sends outbound traffic only t
 starts only after that interface exists, and exits if either OpenVPN or the tunnel disappears. A
 non-privileged Kubernetes deployment therefore needs `NET_ADMIN` and access to `/dev/net/tun`;
 using a privileged container only hides that device setup and grants substantially broader access.
+The entrypoint automatically preserves the pre-VPN gateway and directly connected subnet. Routed
+pod or service networks cannot always be inferred from a container interface—for example, Calico
+commonly assigns pods a `/32`—so production deployments should supply those networks through
+`VPN_BYPASS_CIDRS`.
 
 Production deployments can set `researchJob.env.CRAWLER_PROXY_URL` to an externally managed proxy
 or VPN gateway and configure SearXNG's `outgoing.proxies` to use it. The researcher chart does not
@@ -335,6 +356,10 @@ Administrator hard caps validate the values again at submission. Configure caps 
 
 - `HARD_MAX_QUERIES`
 - `HARD_MAX_WALL_TIME_SECONDS`
+
+`EMBEDDING_BATCH_SIZE` limits how many text chunks the gateway sends to Open WebUI in one
+embeddings request. The default is `32`; lower it when the configured embedding backend has a
+smaller batch limit. This does not truncate source text.
 
 The integration does not impose aggregate input- or output-token budgets on a research run. It
 uses each selected model's frozen `context_length` and `max_output_tokens` metadata to keep every

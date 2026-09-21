@@ -35,8 +35,6 @@ clutter and retain potentially sensitive research without an explicit decision.
 **Consequences:**
 
 - Normal completion automatically attaches all artifacts to the final message.
-- **Attach research files** is only an idempotent recovery action for interrupted historical
-  transfers.
 - **Save report to Knowledge** remains explicit and executes with the current user's authorization.
 
 ## ADR-003: Place GPT Researcher behind a durable gateway
@@ -135,11 +133,12 @@ Each run uses the initiating user's Open WebUI model catalog. The Pipe intersect
 IDs with authoritative metadata retrieved through the integration account. Users choose separate
 fast, smart, and strategic models before approval.
 
-When Open WebUI does not publish `context_length` and `max_output_tokens`, selecting that model
-requires the user to provide both values. Unknown values are a configuration error, not a reason to
-silently apply a guessed default.
+When Open WebUI does not publish `context_length` and `max_output_tokens`, an administrator may
+provide validated per-model fallback values through `MODELS_INFO`. Open WebUI-published values take
+precedence, and the fallback does not affect model visibility. If values remain unknown, selecting
+that model requires the user to provide both values; the integration never silently guesses them.
 
-The selected IDs and limits are frozen with the job. The researcher has no
+The selected IDs and limits are frozen with the job. The researcher has no global
 `MODEL_CONTEXT_WINDOWS` or `DEFAULT_MODEL_CONTEXT_WINDOW` fallback configuration.
 All model and embedding requests pass through Open WebUI. A direct provider route was rejected
 because it would create a second authorization and model-configuration authority.
@@ -290,6 +289,29 @@ image tags.
 - The packaged chart selects the same exact-version application image by default.
 - A publishing-workflow fix requires a tag on a commit containing that fix; changing the branch
   does not alter the workflow associated with an existing tag.
+
+## ADR-018: Size reports from evidence coverage
+
+**Status:** Accepted
+
+Research breadth, depth, and queries per branch control evidence collection. Report length is not
+a user or infrastructure limit. The integration supplements the upstream prompt with an
+evidence-driven stopping rule: cover every requested aspect supported by the gathered evidence,
+avoid repetition and padding, and then conclude. The adapter removes the upstream minimum-word
+instruction so its built-in default does not become an implicit report-size control.
+
+## ADR-019: Preserve streaming across the model gateway
+
+**Status:** Accepted
+
+When GPT Researcher requests a streaming chat completion, the research gateway passes Open
+WebUI's server-sent events through without buffering the complete response. This is particularly
+important for final report generation, where GPT Researcher submits the aggregated research
+context in one request and generation may take several minutes.
+
+The gateway requests usage in the final stream event and accounts it after the stream closes. If
+the provider omits usage, the gateway conservatively estimates input and output tokens from the
+request and streamed content. Non-streaming callers retain the existing JSON response path.
 
 ## Recovery and retention consequences
 

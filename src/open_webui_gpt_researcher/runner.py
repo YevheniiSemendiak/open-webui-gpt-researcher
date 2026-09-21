@@ -15,6 +15,13 @@ from .engines import ResearchEngine
 log = structlog.get_logger()
 
 
+def _consume_task_result(task: asyncio.Task[object]) -> None:
+    if task.cancelled():
+        return
+    with suppress(asyncio.CancelledError):
+        task.exception()
+
+
 class RunnerClient:
     def __init__(self, *, base_url: str, job_id: UUID, token: str) -> None:
         self.job_id = job_id
@@ -115,16 +122,12 @@ class Runner:
             )
             if cancellation_task in done:
                 stop_state = cancellation_task.result()
-                research_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await research_task
+                await self._cancel_research(research_task)
                 if stop_state == JobState.CANCEL_REQUESTED:
                     await self.client.cancelled()
                 return
             if research_task not in done:
-                research_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await research_task
+                await self._cancel_research(research_task)
                 raise TimeoutError("research exceeded its wall-time budget")
             completion = research_task.result()
             await self.client.complete(completion)
@@ -145,6 +148,18 @@ class Runner:
             with suppress(asyncio.CancelledError):
                 await heartbeat_task
             await self.client.close()
+
+    async def _cancel_research(self, task: asyncio.Task[RunnerCompletion]) -> None:
+        """Request cancellation without letting stuck third-party cleanup block state updates."""
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=self.settings.runner_cancel_grace_seconds)
+        if task not in done:
+            log.error(
+                "runner.research_cancellation_stalled",
+                job_id=str(getattr(self.client, "job_id", "unknown")),
+                grace_seconds=self.settings.runner_cancel_grace_seconds,
+            )
+            task.add_done_callback(_consume_task_result)
 
     async def _heartbeat_forever(self) -> None:
         while True:

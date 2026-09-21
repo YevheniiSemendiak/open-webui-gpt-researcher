@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .domain import ModelRoles, ResearchBudget, ResearchShape
+from .domain import ModelLimits, ModelRoles, ResearchBudget, ResearchShape
 
 
 class Settings(BaseSettings):
@@ -93,14 +93,18 @@ class Settings(BaseSettings):
     public_search_enabled: bool = True
     retriever: str = "searx"
     scraper: str = "nodriver"
+    scraper_page_timeout_seconds: float = Field(default=120.0, ge=10.0, le=600.0)
     searx_url: str = "http://searxng:8080"
     crawler_proxy_url: str | None = None
     default_model_profiles: dict[str, str | ModelRoles] = {"default": "gpt-4.1-mini"}
+    models_info: dict[str, ModelLimits] = Field(default_factory=dict)
     default_research_strategy: Literal["focused", "balanced", "broad", "deep"] = "balanced"
     model_context_safety_tokens: int = Field(default=256, ge=0, le=8_192)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_batch_size: int = Field(default=32, ge=1, le=256)
     runner_cancel_poll_seconds: float = Field(default=1.0, ge=0.5)
+    runner_cancel_grace_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
 
     default_budget: ResearchBudget = ResearchBudget()
     hard_max_queries: int = Field(default=100, ge=1)

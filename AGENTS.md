@@ -11,6 +11,8 @@ manual.
   configuration, credentials, upgrades, and operator procedures.
 - `docs/development.md` owns contributor setup, codebase internals, development tweaks, debugging,
   test workflows, and experimental tooling.
+- `docs/usage.md` and `docs/usage-uk.md` own the concise English and Ukrainian end-user workflows,
+  user controls, examples, and screenshot placeholders.
 - `docs/adrs.md` owns accepted architecture decisions, rationale, tradeoffs, consequences, and
   supporting evidence.
 - `docs/roadmap.md` owns planned or explicitly deferred work.

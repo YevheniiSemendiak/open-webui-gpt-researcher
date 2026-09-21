@@ -17,10 +17,11 @@ dependencies = [
   "fastapi>=0.116,<1",
   # PyPI 0.16.0 is not importable; pin the upstream v3.6.1 source revision containing the fix.
   "gpt-researcher @ https://github.com/assafelovic/gpt-researcher/archive/6f998577d547b1e54ec662dac63583aa11e3b84b.tar.gz",
-  "httpx>=0.28,<1",
+  "httpx[socks]>=0.28,<1",
   "kubernetes-asyncio>=33,<36",
   "pydantic-settings>=2.10,<3",
   "python-multipart>=0.0.20,<1",
+  "requests[socks]>=2.32,<3",
   "sqlalchemy[asyncio]>=2.0.41,<3",
   "structlog>=25.4,<26",
   "uvicorn[standard]>=0.35,<1",

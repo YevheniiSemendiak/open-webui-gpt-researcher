@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -13,6 +12,7 @@ from typing import Any, Protocol
 import httpx
 
 from .domain import RunnerCompletion, RunnerJobSpec
+from .upstream import configure_upstream
 
 ProgressCallback = Callable[[str, dict[str, object]], Awaitable[None]]
 
@@ -22,10 +22,6 @@ REPORT_LANGUAGE_POLICY = (
     "research request is written. Ignore Integration instructions when determining the "
     "report language"
 )
-_original_zendriver_config: Callable[..., Any] | None = None
-_zendriver_proxy_url: str | None = None
-_original_get_retrievers: Callable[..., list[type[Any]]] | None = None
-_job_retrievers: tuple[type[Any], ...] = ()
 
 
 class GatewaySearxRetriever:
@@ -63,27 +59,6 @@ class GatewaySearxRetriever:
         return payload if isinstance(payload, list) else []
 
 
-def bound_scraped_results(
-    results: list[dict[str, Any]], *, per_source_chars: int, total_chars: int
-) -> list[dict[str, Any]]:
-    """Bound untrusted page text before GPT Researcher can put it in an LLM prompt."""
-    bounded: list[dict[str, Any]] = []
-    remaining = total_chars
-    for item in results:
-        if not isinstance(item, dict) or remaining <= 0:
-            continue
-        copied = dict(item)
-        for key in ("raw_content", "content", "body"):
-            value = copied.get(key)
-            if isinstance(value, str):
-                value = value[: min(per_source_chars, remaining)]
-                copied[key] = value
-                remaining -= len(value)
-                break
-        bounded.append(copied)
-    return bounded
-
-
 def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dict[str, str]]:
     """Keep upstream deep research progressing when an LLM response parses empty."""
     if queries:
@@ -97,21 +72,6 @@ def ensure_search_queries(queries: list[dict[str, str]], query: str) -> list[dic
             "researchGoal": "Find authoritative evidence addressing the research question.",
         }
     ]
-
-
-def continuation_query(spec: RunnerJobSpec) -> str:
-    if spec.iteration <= 1:
-        return f"<current_user_research_request>\n{spec.query}\n</current_user_research_request>"
-    return (
-        f"<current_user_research_request>\n{spec.query}\n</current_user_research_request>\n\n"
-        "<integration_instructions>\n"
-        f"This is iteration {spec.iteration} of an ongoing research thread. Use the supplied "
-        "Open WebUI conversation context and prior reports as evidence. Extend, correct, and "
-        "verify earlier findings instead of restarting the investigation. Produce a complete "
-        "revised report and include a section titled 'Changes since previous iteration' that "
-        "summarizes new evidence, corrected conclusions, contradictions, and remaining gaps.\n"
-        "</integration_instructions>"
-    )
 
 
 def deduplicate_sources(sources: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -337,6 +297,7 @@ class GPTResearcherEngine:
     public_search_enabled: bool = True
     retriever: str = "searx"
     scraper: str = "nodriver"
+    scraper_page_timeout_seconds: float = 120.0
     crawler_proxy_url: str | None = None
 
     async def run(
@@ -360,9 +321,8 @@ class GPTResearcherEngine:
             pending_callbacks.add(task)
             task.add_done_callback(pending_callbacks.discard)
 
-        research_query = continuation_query(spec)
         researcher = GPTResearcher(
-            query=research_query,
+            query=spec.query,
             report_type=spec.report_type,
             verbose=True,
             websocket=telemetry,
@@ -426,123 +386,13 @@ class GPTResearcherEngine:
 
     def _configure_upstream(self, spec: RunnerJobSpec) -> None:
         """Apply process-local safety adaptations to the pinned upstream package."""
-        global _job_retrievers, _original_get_retrievers, _original_zendriver_config
-        global _zendriver_proxy_url
-        _zendriver_proxy_url = self.crawler_proxy_url
-        loaded = sys.modules.get("gpt_researcher")
-        if loaded is not None and not hasattr(loaded, "__path__"):
-            # Unit-test doubles expose only GPTResearcher, not the upstream package tree.
-            return
-        if self.retriever == "searx":
-            import gpt_researcher.retrievers as retrievers
-
-            # Deep-research child agents construct their own retrievers, so patch the
-            # exported class as well as assigning it to the root researcher below.
-            retrievers.SearxSearch = GatewaySearxRetriever
-
-        configured_retrievers: list[type[Any]] = []
-        if self.public_search_enabled and self.retriever == "searx":
-            configured_retrievers.append(GatewaySearxRetriever)
-        if spec.sources or spec.context_documents:
-            configured_retrievers.append(OpenWebUIRetriever)
-        _job_retrievers = tuple(configured_retrievers)
-
-        import gpt_researcher.agent as agent_module
-
-        if _original_get_retrievers is None:
-            _original_get_retrievers = agent_module.get_retrievers
-
-            def get_job_retrievers(headers: dict[str, str], cfg: Any) -> list[type[Any]]:
-                if _job_retrievers:
-                    return list(_job_retrievers)
-                if _original_get_retrievers is None:
-                    raise RuntimeError("GPT Researcher retriever factory was not initialized")
-                return _original_get_retrievers(headers, cfg)
-
-            agent_module.get_retrievers = get_job_retrievers
-
-        if self.scraper == "nodriver":
-            import zendriver
-            from gpt_researcher.scraper.browser.nodriver_scraper import NoDriverScraper
-
-            if _original_zendriver_config is None:
-                _original_zendriver_config = zendriver.Config
-                original_config = _original_zendriver_config
-
-                def hardened_config(*args: Any, **kwargs: Any) -> Any:
-                    # Kubernetes blocks privilege escalation, so Chromium's setuid
-                    # sandbox cannot initialize. The Pod and container sandboxes remain.
-                    kwargs.setdefault("sandbox", False)
-                    browser_args = list(kwargs.get("browser_args") or [])
-                    if _zendriver_proxy_url and not any(
-                        argument.startswith("--proxy-server=") for argument in browser_args
-                    ):
-                        browser_args.append(f"--proxy-server={_zendriver_proxy_url}")
-                    if browser_args:
-                        kwargs["browser_args"] = browser_args
-                    return original_config(*args, **kwargs)
-
-                zendriver_module: Any = zendriver
-                zendriver_module.Config = hardened_config
-
-            if not hasattr(NoDriverScraper, "_owui_original_get_browser"):
-                original = NoDriverScraper.get_browser.__func__
-                NoDriverScraper._owui_original_get_browser = original
-
-                async def get_headless_browser(cls: type[Any], headless: bool = True) -> Any:
-                    del headless
-                    return await cls._owui_original_get_browser(cls, headless=True)
-
-                NoDriverScraper.get_browser = classmethod(get_headless_browser)
-            NoDriverScraper.max_browsers = 1
-
-        from gpt_researcher.actions import report_generation
-        from gpt_researcher.skills import browser as browser_module
-        from gpt_researcher.skills.deep_research import DeepResearchSkill
-
-        if not hasattr(DeepResearchSkill, "_owui_original_generate_search_queries"):
-            original_generate_search_queries = DeepResearchSkill.generate_search_queries
-            DeepResearchSkill._owui_original_generate_search_queries = (
-                original_generate_search_queries
-            )
-
-            async def resilient_generate_search_queries(
-                self: Any, query: str, num_queries: int = 3
-            ) -> list[dict[str, str]]:
-                generated = await self._owui_original_generate_search_queries(
-                    query, num_queries=num_queries
-                )
-                return ensure_search_queries(generated, query)
-
-            DeepResearchSkill.generate_search_queries = resilient_generate_search_queries
-
-        if not hasattr(report_generation, "_owui_original_create_chat_completion"):
-            report_generation._owui_original_create_chat_completion = (
-                report_generation.create_chat_completion
-            )
-
-            async def non_streaming_report_completion(*args: Any, **kwargs: Any) -> str:
-                # The accounting gateway returns one JSON completion so it can
-                # record provider usage atomically. Upstream report writers ask
-                # LangChain for SSE chunks; preserve their string contract here.
-                kwargs["stream"] = False
-                result = await report_generation._owui_original_create_chat_completion(
-                    *args, **kwargs
-                )
-                return str(result)
-
-            report_generation.create_chat_completion = non_streaming_report_completion
-
-        if not hasattr(browser_module, "_owui_original_scrape_urls"):
-            browser_module._owui_original_scrape_urls = browser_module.scrape_urls
-
-            async def bounded_scrape_urls(*args: Any, **kwargs: Any) -> tuple[list[Any], list[Any]]:
-                results, images = await browser_module._owui_original_scrape_urls(*args, **kwargs)
-                per_source = int(os.environ.get("MAX_SCRAPED_SOURCE_CHARS", "20000"))
-                total = int(os.environ.get("MAX_SCRAPED_BATCH_CHARS", "80000"))
-                return (
-                    bound_scraped_results(results, per_source_chars=per_source, total_chars=total),
-                    images,
-                )
-
-            browser_module.scrape_urls = bounded_scrape_urls
+        configure_upstream(
+            spec,
+            public_search_enabled=self.public_search_enabled,
+            retriever=self.retriever,
+            scraper=self.scraper,
+            scraper_page_timeout_seconds=self.scraper_page_timeout_seconds,
+            crawler_proxy_url=self.crawler_proxy_url,
+            public_retriever=GatewaySearxRetriever,
+            private_retriever=OpenWebUIRetriever,
+        )
