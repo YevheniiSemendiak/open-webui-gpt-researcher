@@ -25,10 +25,7 @@ async def collect_pipe_result(result: object) -> str:
 
 
 def test_artifact_action_exposes_named_subactions() -> None:
-    assert [item["id"] for item in Action().actions] == [
-        "attach_artifacts",
-        "save_to_knowledge",
-    ]
+    assert [item["id"] for item in Action().actions] == ["save_to_knowledge"]
 
 
 def test_pipe_extracts_question_sources_and_user_limits() -> None:
@@ -578,152 +575,6 @@ async def test_pipe_reprompts_for_invalid_user_model_limits() -> None:
     assert limit_attempt == 2
 
 
-async def test_artifact_action_uploads_user_owned_files_and_emits_attachments(
-    monkeypatch: Any,
-) -> None:
-    action = Action()
-    action.valves.service_token = "service-token"
-    action.valves.service_url = "http://research"
-    action.valves.openwebui_url = "http://openwebui"
-    job_id = "12345678-1234-1234-1234-123456789abc"
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == "/v1/research-jobs/resolve":
-            assert request.url.params["chat_id"] == "chat-1"
-            assert request.url.params["message_id"] == "message-1"
-            return httpx.Response(200, json={"id": job_id, "state": "succeeded"})
-        if request.url.path.endswith("/artifacts"):
-            return httpx.Response(
-                200,
-                json=[
-                    {"name": "report.md", "media_type": "text/markdown", "size": 8},
-                    {"name": "sources.json", "media_type": "application/json", "size": 2},
-                ],
-            )
-        if request.url.path == "/api/v1/chats/chat-1":
-            return httpx.Response(200, json={"chat": {"history": {"messages": {"message-1": {}}}}})
-        if request.url.path.endswith("/report.md/content"):
-            return httpx.Response(
-                200, content=b"# Report", headers={"content-type": "text/markdown"}
-            )
-        if request.url.path.endswith("/sources.json/content"):
-            return httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
-        if request.url.path == "/api/v1/files/":
-            index = len([item for item in requests if item.url.path == "/api/v1/files/"])
-            return httpx.Response(
-                200,
-                json={
-                    "id": f"file-{index}",
-                    "filename": "artifact",
-                    "meta": {"name": "report.md" if index == 1 else "sources.json", "size": 8},
-                },
-            )
-        if request.url.path.endswith("/data/content/update"):
-            return httpx.Response(200, json={"content": "updated"})
-        raise AssertionError(request.url)
-
-    original_client = httpx.AsyncClient
-
-    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
-        del args, kwargs
-        return original_client(transport=httpx.MockTransport(handler))
-
-    events: list[dict[str, Any]] = []
-
-    async def emit(event: dict[str, Any]) -> None:
-        events.append(event)
-
-    monkeypatch.setattr("openwebui_functions.save_research_to_knowledge.httpx.AsyncClient", client)
-    result = await action.action(
-        {
-            "chat_id": "chat-1",
-            "id": "message-1",
-        },
-        {"id": "user-1"},
-        __id__="attach_artifacts",
-        __request__=SimpleNamespace(headers={"authorization": "Bearer user-token"}),
-        __event_emitter__=emit,
-    )
-
-    assert [item["name"] for item in result["files"]] == ["report.md", "sources.json"]
-    file_event = next(event for event in events if event["type"] == "files")
-    assert len(file_event["data"]["files"]) == 2
-    uploads = [item for item in requests if item.url.path == "/api/v1/files/"]
-    assert all(item.headers["authorization"] == "Bearer user-token" for item in uploads)
-    preview_updates = [item for item in requests if item.url.path.endswith("/data/content/update")]
-    assert len(preview_updates) == 2
-    assert all(item.headers["authorization"] == "Bearer user-token" for item in preview_updates)
-    researcher_calls = [item for item in requests if item.url.host == "research"]
-    assert all(item.headers["x-openwebui-user-id"] == "user-1" for item in researcher_calls)
-
-
-async def test_artifact_action_repairs_empty_preview_for_existing_file(monkeypatch: Any) -> None:
-    action = Action()
-    action.valves.service_token = "service-token"
-    action.valves.service_url = "http://research"
-    action.valves.openwebui_url = "http://openwebui"
-    job_id = "12345678-1234-1234-1234-123456789abc"
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == "/api/v1/chats/chat-1":
-            return httpx.Response(
-                200,
-                json={
-                    "chat": {
-                        "history": {
-                            "messages": {
-                                "message-1": {
-                                    "files": [{"type": "file", "id": "file-1", "name": "report.md"}]
-                                }
-                            }
-                        }
-                    }
-                },
-            )
-        if request.url.path.endswith("/artifacts"):
-            return httpx.Response(
-                200,
-                json=[{"name": "report.md", "media_type": "text/markdown", "size": 8}],
-            )
-        if request.url.path == "/api/v1/files/file-1":
-            return httpx.Response(200, json={"id": "file-1", "data": {}})
-        if request.url.path.endswith("/report.md/content"):
-            return httpx.Response(
-                200, content=b"# Report", headers={"content-type": "text/markdown"}
-            )
-        if request.url.path == "/api/v1/files/file-1/data/content/update":
-            assert request.headers["authorization"] == "Bearer user-token"
-            assert request.read() == b'{"content":"# Report"}'
-            return httpx.Response(200, json={"content": "# Report"})
-        raise AssertionError(request.url)
-
-    original_client = httpx.AsyncClient
-
-    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
-        del args, kwargs
-        return original_client(transport=httpx.MockTransport(handler))
-
-    monkeypatch.setattr("openwebui_functions.save_research_to_knowledge.httpx.AsyncClient", client)
-    result = await action.action(
-        {
-            "statusHistory": [{"job_id": job_id, "done": True}],
-            "chat_id": "chat-1",
-            "id": "message-1",
-        },
-        {"id": "user-1"},
-        __id__="attach_artifacts",
-        __request__=SimpleNamespace(headers={"authorization": "Bearer user-token"}),
-    )
-
-    assert result == {"job_id": job_id, "files": [], "already_attached": True}
-    assert not [item for item in requests if item.url.path == "/api/v1/files/"]
-    assert len([item for item in requests if item.url.path.endswith("/data/content/update")]) == 1
-
-
 async def test_knowledge_action_uses_attached_user_file(monkeypatch: Any) -> None:
     action = Action()
     action.valves.service_token = "service-token"
@@ -733,6 +584,8 @@ async def test_knowledge_action_uses_attached_user_file(monkeypatch: Any) -> Non
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path == "/api/v1/knowledge/":
+            return httpx.Response(200, json={"items": [], "total": 0})
         if request.url.path == "/api/v1/knowledge/create":
             return httpx.Response(200, json={"id": "knowledge-1"})
         if request.url.path == "/api/v1/chats/chat-1":
@@ -779,3 +632,159 @@ async def test_knowledge_action_uses_attached_user_file(monkeypatch: Any) -> Non
 
     assert result == {"knowledge_id": "knowledge-1", "file_id": "file-1"}
     assert all(item.headers["authorization"] == "Bearer user-token" for item in requests)
+
+
+async def test_knowledge_action_picks_existing_writable_collection(monkeypatch: Any) -> None:
+    action = Action()
+    action.valves.service_token = "service-token"
+    action.valves.openwebui_url = "http://openwebui"
+    job_id = "12345678-1234-1234-1234-123456789abc"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/api/v1/knowledge/":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {"id": "knowledge-1", "name": "Read only", "write_access": False},
+                        {"id": "knowledge-2", "name": "Investigations", "write_access": True},
+                        {
+                            "id": "knowledge-3",
+                            "name": "External",
+                            "write_access": True,
+                            "meta": {"source": "external"},
+                        },
+                    ],
+                    "total": 3,
+                },
+            )
+        if request.url.path == "/api/v1/chats/chat-1":
+            return httpx.Response(
+                200,
+                json={
+                    "chat": {
+                        "history": {
+                            "messages": {
+                                "message-1": {
+                                    "files": [{"type": "file", "id": "file-1", "name": "report.md"}]
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+        if request.url.path == "/api/v1/knowledge/knowledge-2/file/add":
+            return httpx.Response(200, json={"ok": True})
+        raise AssertionError(request.url)
+
+    original_client = httpx.AsyncClient
+
+    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        del args, kwargs
+        return original_client(transport=httpx.MockTransport(handler))
+
+    async def event_call(event: dict[str, Any]) -> str:
+        assert event["type"] == "input"
+        assert event["data"]["input"] == {
+            "type": "select",
+            "options": [
+                {
+                    "label": "Create a new Knowledge collection",
+                    "value": "__create_new_knowledge__",
+                },
+                {"label": "Investigations", "value": "knowledge-2"},
+            ],
+        }
+        return "knowledge-2"
+
+    monkeypatch.setattr("openwebui_functions.save_research_to_knowledge.httpx.AsyncClient", client)
+    result = await action.action(
+        {
+            "statusHistory": [{"job_id": job_id, "done": True}],
+            "chat_id": "chat-1",
+            "id": "message-1",
+        },
+        {"id": "user-1"},
+        __id__="save_to_knowledge",
+        __request__=SimpleNamespace(headers={"authorization": "Bearer user-token"}),
+        __event_call__=event_call,
+    )
+
+    assert result == {"knowledge_id": "knowledge-2", "file_id": "file-1"}
+    assert not [item for item in requests if item.url.path == "/api/v1/knowledge/create"]
+
+
+async def test_knowledge_action_emits_openwebui_failure(monkeypatch: Any) -> None:
+    action = Action()
+    action.valves.service_token = "service-token"
+    action.valves.openwebui_url = "http://openwebui"
+    job_id = "12345678-1234-1234-1234-123456789abc"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/knowledge/":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if request.url.path == "/api/v1/knowledge/create":
+            return httpx.Response(200, json={"id": "knowledge-1"})
+        if request.url.path == "/api/v1/chats/chat-1":
+            return httpx.Response(
+                200,
+                json={
+                    "chat": {
+                        "history": {
+                            "messages": {
+                                "message-1": {
+                                    "files": [{"type": "file", "id": "file-1", "name": "report.md"}]
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+        if request.url.path == "/api/v1/knowledge/knowledge-1/file/add":
+            return httpx.Response(400, json={"detail": "embedding failed"})
+        raise AssertionError(request.url)
+
+    original_client = httpx.AsyncClient
+
+    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        del args, kwargs
+        return original_client(transport=httpx.MockTransport(handler))
+
+    async def event_call(event: dict[str, Any]) -> str:
+        del event
+        return "My research"
+
+    events: list[dict[str, Any]] = []
+
+    async def emit(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    monkeypatch.setattr("openwebui_functions.save_research_to_knowledge.httpx.AsyncClient", client)
+    result = await action.action(
+        {
+            "statusHistory": [{"job_id": job_id, "done": True}],
+            "chat_id": "chat-1",
+            "id": "message-1",
+        },
+        {"id": "user-1"},
+        __request__=SimpleNamespace(headers={"authorization": "Bearer user-token"}),
+        __event_call__=event_call,
+        __event_emitter__=emit,
+    )
+
+    assert result == {
+        "error": 'Open WebUI rejected the Knowledge update: {"detail":"embedding failed"}'
+    }
+    assert events == [
+        {
+            "type": "notification",
+            "data": {
+                "type": "error",
+                "content": (
+                    'Open WebUI rejected the Knowledge update: {"detail":"embedding failed"}'
+                ),
+            },
+        }
+    ]

@@ -11,7 +11,6 @@
 
 - Editable research plans and follow-up questions before approval.
 - Native citation/source events in Open WebUI.
-- UI-assisted Knowledge collection selection instead of the initial `id:<knowledge-id>` input.
 - Policy-scoped MCP server catalogs, per-job tool grants, and tool-call audit trails.
 - Optional sandboxed code execution for analysis tasks that require computation or file conversion.
 - PDF/DOCX report rendering as an independent artifact worker.

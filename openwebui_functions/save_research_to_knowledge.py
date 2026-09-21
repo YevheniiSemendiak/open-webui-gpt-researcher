@@ -16,10 +16,9 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel
 
-ACTIONS = [
-    {"id": "attach_artifacts", "name": "Attach research files"},
-    {"id": "save_to_knowledge", "name": "Save report to Knowledge"},
-]
+ACTIONS = [{"id": "save_to_knowledge", "name": "Save report to Knowledge"}]
+
+CREATE_KNOWLEDGE_TARGET = "__create_new_knowledge__"
 
 
 class Action:
@@ -42,11 +41,17 @@ class Action:
         __event_call__: Any = None,
         __event_emitter__: Any = None,
     ) -> dict[str, Any]:
+        del __id__
         if not self.valves.service_token:
-            return {"error": "The administrator has not configured the research service token."}
+            return await self._error(
+                "The administrator has not configured the research service token.",
+                __event_emitter__,
+            )
         authorization = self._authorization(__request__)
         if authorization is None:
-            return {"error": "An authenticated Open WebUI request is required."}
+            return await self._error(
+                "An authenticated Open WebUI request is required.", __event_emitter__
+            )
         user_id = str(__user__.get("id", ""))
 
         try:
@@ -55,106 +60,55 @@ class Action:
                 if job_id is None:
                     job_id = await self._resolve_job_id(client, body=body, user_id=user_id)
                 if job_id is None:
-                    return {"error": "This message is not associated with a deep-research job."}
+                    return await self._error(
+                        "This message is not associated with a deep-research job.",
+                        __event_emitter__,
+                    )
                 existing_files = await self._message_files(
                     client, body=body, authorization=authorization
                 )
-                if __id__ == "attach_artifacts":
-                    result = await self._attach_artifacts(
-                        client,
-                        job_id=job_id,
-                        existing_files=existing_files,
-                        user_id=user_id,
-                        authorization=authorization,
-                        event_emitter=__event_emitter__,
+                if __event_call__ is None:
+                    return await self._error(
+                        "An active browser session is required.", __event_emitter__
                     )
-                    message = "Research files attached to this message."
-                else:
-                    if __event_call__ is None:
-                        return {"error": "An active browser session is required."}
-                    result = await self._save_to_knowledge(
-                        client,
-                        job_id=job_id,
-                        existing_files=existing_files,
-                        user_id=user_id,
-                        authorization=authorization,
-                        event_call=__event_call__,
-                    )
-                    message = "Research report saved to Knowledge."
+                result = await self._save_to_knowledge(
+                    client,
+                    job_id=job_id,
+                    existing_files=existing_files,
+                    user_id=user_id,
+                    authorization=authorization,
+                    event_call=__event_call__,
+                )
         except httpx.HTTPStatusError as error:
-            return {"error": error.response.text[:1_000]}
+            detail = error.response.text[:1_000]
+            return await self._error(
+                f"Open WebUI rejected the Knowledge update: {detail}", __event_emitter__
+            )
         except httpx.HTTPError as error:
-            return {"error": f"Artifact materialization failed: {error}"}
+            return await self._error(f"Knowledge update failed: {error}", __event_emitter__)
+
+        if error := result.get("error"):
+            return await self._error(str(error), __event_emitter__)
 
         if __event_emitter__ is not None:
             await __event_emitter__(
                 {
                     "type": "notification",
-                    "data": {"type": "success", "content": message},
+                    "data": {"type": "success", "content": "Research report saved to Knowledge."},
                 }
             )
         return result
 
-    async def _attach_artifacts(
-        self,
-        client: httpx.AsyncClient,
-        *,
-        job_id: str,
-        existing_files: list[dict[str, Any]],
-        user_id: str,
-        authorization: str,
-        event_emitter: Any,
-    ) -> dict[str, Any]:
-        manifest = await self._manifest(client, job_id=job_id, user_id=user_id)
-        existing_names = {
-            str(item.get("name"))
-            for item in existing_files
-            if isinstance(item, dict) and item.get("name")
-        }
-        existing_by_name = {
-            str(item.get("name")): item
-            for item in existing_files
-            if isinstance(item, dict) and item.get("name") and item.get("id")
-        }
-        uploaded: list[dict[str, Any]] = []
-        for artifact in manifest:
-            name = str(artifact["name"])
-            if name in existing_names:
-                existing = existing_by_name.get(name)
-                if existing is not None and not await self._has_preview_content(
-                    client,
-                    file_id=str(existing["id"]),
-                    authorization=authorization,
-                ):
-                    content, media_type = await self._fetch_artifact(
-                        client, job_id=job_id, name=name, user_id=user_id
-                    )
-                    await self._set_preview_content(
-                        client,
-                        file_id=str(existing["id"]),
-                        content=content,
-                        media_type=media_type,
-                        authorization=authorization,
-                    )
-                continue
-            content, media_type = await self._fetch_artifact(
-                client, job_id=job_id, name=name, user_id=user_id
+    @staticmethod
+    async def _error(message: str, event_emitter: Any) -> dict[str, str]:
+        if event_emitter is not None:
+            await event_emitter(
+                {
+                    "type": "notification",
+                    "data": {"type": "error", "content": message},
+                }
             )
-            uploaded.append(
-                await self._upload_to_openwebui(
-                    client,
-                    name=name,
-                    content=content,
-                    media_type=media_type,
-                    authorization=authorization,
-                    process=False,
-                    job_id=job_id,
-                )
-            )
-
-        if uploaded and event_emitter is not None:
-            await event_emitter({"type": "files", "data": {"files": uploaded}})
-        return {"job_id": job_id, "files": uploaded, "already_attached": not uploaded}
+        return {"error": message}
 
     async def _save_to_knowledge(
         self,
@@ -166,21 +120,53 @@ class Action:
         authorization: str,
         event_call: Any,
     ) -> dict[str, Any]:
-        target = await event_call(
-            {
-                "type": "input",
-                "data": {
-                    "title": "Save research to Knowledge",
-                    "message": (
-                        "Enter a name to create a new Knowledge collection. To append to an "
-                        "existing collection, enter `id:<knowledge-id>`."
-                    ),
-                    "placeholder": "Research: market landscape",
-                },
-            }
-        )
+        writable_knowledge = await self._writable_knowledge(client, authorization=authorization)
+        if writable_knowledge:
+            target = await event_call(
+                {
+                    "type": "input",
+                    "data": {
+                        "title": "Save research to Knowledge",
+                        "message": "Choose a writable Knowledge collection for this report.",
+                        "placeholder": "Select a Knowledge collection",
+                        "input": {
+                            "type": "select",
+                            "options": [
+                                {
+                                    "label": "Create a new Knowledge collection",
+                                    "value": CREATE_KNOWLEDGE_TARGET,
+                                },
+                                *[
+                                    {"label": item["name"], "value": item["id"]}
+                                    for item in writable_knowledge
+                                ],
+                            ],
+                        },
+                    },
+                }
+            )
+        else:
+            target = CREATE_KNOWLEDGE_TARGET
+
+        if target == CREATE_KNOWLEDGE_TARGET:
+            target = await event_call(
+                {
+                    "type": "input",
+                    "data": {
+                        "title": "Create Knowledge collection",
+                        "message": "Enter a name for the new private Knowledge collection.",
+                        "placeholder": "Research: market landscape",
+                    },
+                }
+            )
+            create_knowledge = True
+        else:
+            create_knowledge = False
+
         if not isinstance(target, str) or not target.strip():
             return {"error": "Save cancelled."}
+        if not create_knowledge and target not in {item["id"] for item in writable_knowledge}:
+            return {"error": "The selected Knowledge collection is not writable."}
 
         report_file_id = self._attached_report_id(existing_files)
         if report_file_id is None:
@@ -200,11 +186,7 @@ class Action:
 
         target = target.strip()
         headers = {"Authorization": authorization}
-        if target.startswith("id:"):
-            knowledge_id = target[3:].strip()
-            if not knowledge_id:
-                return {"error": "Knowledge id cannot be empty."}
-        else:
+        if create_knowledge:
             response = await client.post(
                 f"{self.valves.openwebui_url.rstrip('/')}/api/v1/knowledge/create",
                 headers=headers,
@@ -216,6 +198,8 @@ class Action:
             )
             response.raise_for_status()
             knowledge_id = str(response.json()["id"])
+        else:
+            knowledge_id = target
 
         response = await client.post(
             f"{self.valves.openwebui_url.rstrip('/')}/api/v1/knowledge/{knowledge_id}/file/add",
@@ -225,18 +209,43 @@ class Action:
         response.raise_for_status()
         return {"knowledge_id": knowledge_id, "file_id": report_file_id}
 
-    async def _manifest(
-        self, client: httpx.AsyncClient, *, job_id: str, user_id: str
-    ) -> list[dict[str, Any]]:
-        response = await client.get(
-            f"{self.valves.service_url.rstrip('/')}/v1/research-jobs/{job_id}/artifacts",
-            headers=self._service_headers(user_id),
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise httpx.HTTPError("Research service returned an invalid artifact manifest")
-        return [item for item in payload if isinstance(item, dict) and item.get("name")]
+    async def _writable_knowledge(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        authorization: str,
+    ) -> list[dict[str, str]]:
+        headers = {"Authorization": authorization}
+        writable: list[dict[str, str]] = []
+        page = 1
+        seen = 0
+        while True:
+            response = await client.get(
+                f"{self.valves.openwebui_url.rstrip('/')}/api/v1/knowledge/",
+                headers=headers,
+                params={"page": page},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            seen += len(items)
+            for item in items:
+                if not isinstance(item, dict) or item.get("write_access") is not True:
+                    continue
+                meta = item.get("meta")
+                if isinstance(meta, dict) and meta.get("source") == "external":
+                    continue
+                knowledge_id = item.get("id")
+                name = item.get("name")
+                if knowledge_id and name:
+                    writable.append({"id": str(knowledge_id), "name": str(name)})
+
+            total = payload.get("total", len(items)) if isinstance(payload, dict) else len(items)
+            if not items or seen >= total:
+                break
+            page += 1
+
+        return writable
 
     async def _resolve_job_id(
         self, client: httpx.AsyncClient, *, body: dict[str, Any], user_id: str
@@ -331,21 +340,6 @@ class Action:
             "size": int(metadata.get("size") or len(content)),
             "content_type": str(metadata.get("content_type") or media_type),
         }
-
-    async def _has_preview_content(
-        self,
-        client: httpx.AsyncClient,
-        *,
-        file_id: str,
-        authorization: str,
-    ) -> bool:
-        response = await client.get(
-            f"{self.valves.openwebui_url.rstrip('/')}/api/v1/files/{quote(file_id, safe='')}",
-            headers={"Authorization": authorization},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return bool((payload.get("data") or {}).get("content"))
 
     async def _set_preview_content(
         self,

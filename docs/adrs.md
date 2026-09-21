@@ -35,8 +35,6 @@ clutter and retain potentially sensitive research without an explicit decision.
 **Consequences:**
 
 - Normal completion automatically attaches all artifacts to the final message.
-- **Attach research files** is only an idempotent recovery action for interrupted historical
-  transfers.
 - **Save report to Knowledge** remains explicit and executes with the current user's authorization.
 
 ## ADR-003: Place GPT Researcher behind a durable gateway

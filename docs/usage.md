@@ -289,13 +289,13 @@ add it through **Reference Chats**.
 Saving to Knowledge is an explicit user action:
 
 1. Run **Save report to Knowledge** on the completed message.
-2. Enter a name to create a new private collection.
-3. To append the report to an existing collection, enter `id:<knowledge-id>`.
-4. Open **Workspace → Knowledge** to verify the result.
+2. Choose one of your writable Knowledge collections, or choose **Create a new Knowledge
+   collection** and enter its name.
+3. Open **Workspace → Knowledge** to verify the result.
 
 > **Screenshot placeholder 10:** The **Save report to Knowledge** action on a completed message.
 
-> **Screenshot placeholder 11:** Entering a new collection name or `id:<knowledge-id>`.
+> **Screenshot placeholder 11:** Choosing an existing collection or creating a new one.
 
 ## Practical tips
 
