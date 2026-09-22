@@ -140,7 +140,7 @@ services:
       - "8090:8090"
 
   open-webui:
-    image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.3}
+    image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.4}
     environment:
       DATABASE_URL: postgresql://research:research@postgres:5432/openwebui
       WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:-local-open-webui-secret-change-before-sharing}
