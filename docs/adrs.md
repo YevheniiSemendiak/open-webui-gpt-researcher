@@ -313,6 +313,20 @@ The gateway requests usage in the final stream event and accounts it after the s
 the provider omits usage, the gateway conservatively estimates input and output tokens from the
 request and streamed content. Non-streaming callers retain the existing JSON response path.
 
+## ADR-020: Derive durable research metrics from PostgreSQL
+
+**Status:** Accepted
+
+Job state, rolling completion counts, lifecycle-duration quantiles, accounted usage, and artifact
+totals are derived periodically from the durable PostgreSQL records. Every API replica exposes the
+same snapshot, and dashboards use `max` across replicas for these gauges. This avoids counting a
+transition only on whichever replica happened to process it and remains correct when controller
+leadership changes.
+
+Transient API, model, search, dispatch, reconciliation, and progress observations remain
+process-local Prometheus counters or histograms because failures and timings in those operations
+are not all persisted. Prometheus aggregates those series across replicas.
+
 ## Recovery and retention consequences
 
 Dispatch leases recover a gateway failure before a runner starts. Active runners persist

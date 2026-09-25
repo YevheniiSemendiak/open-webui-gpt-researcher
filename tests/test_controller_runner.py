@@ -24,6 +24,7 @@ from open_webui_gpt_researcher.domain import (
     RunnerJobSpec,
 )
 from open_webui_gpt_researcher.executors import DispatchStatus
+from open_webui_gpt_researcher.metrics import ResearchMetrics
 from open_webui_gpt_researcher.repository import JobRepository
 from open_webui_gpt_researcher.runner import Runner
 
@@ -95,6 +96,7 @@ async def test_controller_dispatches_and_records_failure(tmp_path: Path) -> None
         database=database,
         repository=repository,
         executor=executor,
+        metrics=ResearchMetrics(),
     )
     assert await controller.dispatch_one() is True
     assert executor.calls[0][0] == UUID(job_id)
@@ -135,6 +137,7 @@ async def test_controller_requeues_missing_expired_dispatch(tmp_path: Path) -> N
         database=database,
         repository=repository,
         executor=RecordingExecutor(status=DispatchStatus.MISSING),
+        metrics=ResearchMetrics(),
     )
     assert await controller.reconcile_expired_dispatches() == 1
     async with database.session() as session:
@@ -179,6 +182,7 @@ async def test_controller_renews_existing_expired_dispatch(tmp_path: Path) -> No
         database=database,
         repository=repository,
         executor=RecordingExecutor(status=DispatchStatus.ACTIVE),
+        metrics=ResearchMetrics(),
     )
     assert await controller.reconcile_expired_dispatches() == 1
     async with database.session() as session:
@@ -229,6 +233,7 @@ async def test_controller_finishes_cancelled_dispatch(
         database=database,
         repository=repository,
         executor=executor,
+        metrics=ResearchMetrics(),
     )
     assert await controller.reconcile_expired_dispatches() == 1
     async with database.session() as session:
@@ -273,6 +278,7 @@ async def test_controller_requeues_stale_running_job_and_preserves_budget_usage(
         database=database,
         repository=repository,
         executor=executor,
+        metrics=ResearchMetrics(),
     )
     assert await controller.reconcile_stale_runners() == 1
     async with database.session() as session:
@@ -322,6 +328,7 @@ async def test_controller_stops_and_fails_stale_runner_after_attempt_limit(
         database=database,
         repository=repository,
         executor=executor,
+        metrics=ResearchMetrics(),
     )
     assert await controller.reconcile_stale_runners() == 1
     assert executor.stops == [(UUID(job.id), 1)]
@@ -362,6 +369,7 @@ async def test_controller_uses_database_leadership(monkeypatch: Any) -> None:
         database=database,  # type: ignore[arg-type]
         repository=JobRepository(),
         executor=RecordingExecutor(),
+        metrics=ResearchMetrics(),
     )
     dispatch = AsyncMock(side_effect=asyncio.CancelledError)
     monkeypatch.setattr(controller, "_dispatch_forever", dispatch)
@@ -377,6 +385,7 @@ async def test_controller_returns_when_leadership_is_lost() -> None:
         database=FakeLeaderDatabase(FakeLeaderLease(acquired=True)),  # type: ignore[arg-type]
         repository=JobRepository(),
         executor=RecordingExecutor(),
+        metrics=ResearchMetrics(),
     )
     await controller._dispatch_forever(  # type: ignore[arg-type]
         lease=FakeLeaderLease(acquired=True, valid=False)

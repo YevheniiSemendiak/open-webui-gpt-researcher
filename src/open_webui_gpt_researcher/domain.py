@@ -24,6 +24,17 @@ class JobState(enum.StrEnum):
     CANCELLED = "cancelled"
 
 
+class ResearchStage(enum.StrEnum):
+    """Stable research lifecycle stages shared by progress events and metrics."""
+
+    STARTING = "starting"
+    RETRIEVAL = "retrieval"
+    PLANNING = "planning"
+    RESEARCHING = "researching"
+    WRITING = "writing"
+    FINALIZING = "finalizing"
+
+
 TERMINAL_STATES = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}
 
 

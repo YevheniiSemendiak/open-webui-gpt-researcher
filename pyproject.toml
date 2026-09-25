@@ -20,6 +20,7 @@ dependencies = [
   "httpx[socks]>=0.28,<1",
   "kubernetes-asyncio>=33,<36",
   "pydantic-settings>=2.10,<3",
+  "prometheus-client>=0.22,<1",
   "python-multipart>=0.0.20,<1",
   "requests[socks]>=2.32,<3",
   "sqlalchemy[asyncio]>=2.0.41,<3",

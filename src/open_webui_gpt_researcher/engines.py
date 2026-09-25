@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from .domain import RunnerCompletion, RunnerJobSpec
+from .domain import ResearchStage, RunnerCompletion, RunnerJobSpec
 from .upstream import configure_upstream
 
 ProgressCallback = Callable[[str, dict[str, object]], Awaitable[None]]
@@ -112,7 +112,7 @@ def normalize_progress_update(update: Any) -> dict[str, object]:
     """Turn GPT Researcher's mutable progress object into durable JSON data."""
     if isinstance(update, dict):
         return {str(key): value for key, value in update.items()}
-    data: dict[str, object] = {"stage": "researching"}
+    data: dict[str, object] = {"stage": ResearchStage.RESEARCHING.value}
     for name in (
         "current_depth",
         "total_depth",
@@ -163,21 +163,23 @@ class GPTResearcherTelemetry:
                 self.page_reads += count
                 await self.emitter.emit(
                     {
-                        "stage": "researching",
+                        "stage": ResearchStage.RESEARCHING.value,
                         "activity": "pages_read",
                         "page_reads": self.page_reads,
                     }
                 )
         elif step == "fetching_query_content":
-            await self.emitter.emit({"stage": "researching", "activity": "extracting_evidence"})
+            await self.emitter.emit(
+                {"stage": ResearchStage.RESEARCHING.value, "activity": "extracting_evidence"}
+            )
         elif step == "writing_report":
-            await self.emitter.emit({"stage": "writing"})
+            await self.emitter.emit({"stage": ResearchStage.WRITING.value})
         elif step == "mcp_results":
             count = self._first_integer(content)
             if count is not None:
                 await self.emitter.emit(
                     {
-                        "stage": "researching",
+                        "stage": ResearchStage.RESEARCHING.value,
                         "activity": "mcp_results",
                         "result_count": count,
                     }
@@ -193,7 +195,7 @@ class GPTResearcherTelemetry:
         if step == "deep_research_initialize":
             await self.emitter.emit(
                 {
-                    "stage": "planning",
+                    "stage": ResearchStage.PLANNING.value,
                     "activity": "research_plan_ready",
                     "breadth": self._integer(details.get("breadth")),
                     "depth": self._integer(details.get("depth")),
@@ -202,13 +204,13 @@ class GPTResearcherTelemetry:
         elif step == "deep_research_complete":
             await self.emitter.emit(
                 {
-                    "stage": "researching",
+                    "stage": ResearchStage.RESEARCHING.value,
                     "activity": "evidence_gathering_complete",
                     "visited_urls": self._integer(details.get("visited_urls")),
                 }
             )
         elif step == "writing_report":
-            await self.emitter.emit({"stage": "writing"})
+            await self.emitter.emit({"stage": ResearchStage.WRITING.value})
 
     @staticmethod
     def _first_integer(content: str) -> int | None:
@@ -330,7 +332,10 @@ class GPTResearcherEngine:
         )
         researcher.cfg.language = REPORT_LANGUAGE_POLICY
         await emitter.emit(
-            {"stage": "planning", "message": "Planning research and identifying sources"},
+            {
+                "stage": ResearchStage.PLANNING.value,
+                "message": "Planning research and identifying sources",
+            },
         )
         if not self.public_search_enabled:
             if not spec.sources and not spec.context_documents:
@@ -345,7 +350,7 @@ class GPTResearcherEngine:
         if pending_callbacks:
             await asyncio.gather(*pending_callbacks, return_exceptions=True)
             pending_callbacks.clear()
-        await emitter.emit({"stage": "writing"})
+        await emitter.emit({"stage": ResearchStage.WRITING.value})
         private_text = "\n\n".join(
             f"[Private Open WebUI source]\n{item.get('text', '')}" for item in private_context
         )
@@ -362,7 +367,10 @@ class GPTResearcherEngine:
             raise RuntimeError("GPT Researcher returned an empty report")
         report = ensure_iteration_summary(report, spec)
         await emitter.emit(
-            {"stage": "finalizing", "message": "Finalizing report and source artifacts"},
+            {
+                "stage": ResearchStage.FINALIZING.value,
+                "message": "Finalizing report and source artifacts",
+            },
         )
 
         sources: list[dict[str, object]] = []
