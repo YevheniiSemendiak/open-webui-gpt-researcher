@@ -27,10 +27,12 @@ from .domain import (
     JobState,
     ModelCapability,
     ModelRoles,
+    ResearchStage,
     RunnerCompletion,
     RunnerEvent,
 )
 from .executors import make_executor
+from .metrics import ResearchMetrics, classify_error, elapsed, model_role, timer
 from .openwebui import OpenWebUIClient, OpenWebUIError
 from .repository import (
     IdempotencyConflictError,
@@ -94,6 +96,7 @@ def create_app(
         timeout=settings.openwebui_timeout_seconds,
     )
     public_search = public_search or SearxClient(settings.searx_url)
+    metrics = ResearchMetrics()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -101,12 +104,16 @@ def create_app(
         if settings.auto_create_schema:
             await database.create_all()
         dispatcher_task: asyncio.Task[None] | None = None
+        metrics_task = asyncio.create_task(
+            metrics.refresh_forever(database), name="research-metrics-refresh"
+        )
         if start_controller:
             dispatcher = Controller(
                 settings=settings,
                 database=database,
                 repository=repository,
                 executor=make_executor(settings),
+                metrics=metrics,
             )
             dispatcher_task = asyncio.create_task(
                 dispatcher.run_forever(), name="research-controller"
@@ -114,6 +121,9 @@ def create_app(
         try:
             yield
         finally:
+            metrics_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await metrics_task
             if dispatcher_task is not None:
                 dispatcher_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -132,6 +142,8 @@ def create_app(
     app.state.openwebui = openwebui
     app.state.public_search = public_search
     app.state.settings = settings
+    app.state.metrics = metrics
+    metrics.install(app)
 
     @app.get("/health/live", include_in_schema=False)
     async def live() -> dict[str, str]:
@@ -298,7 +310,8 @@ def create_app(
                 job = await repository.request_cancel(
                     session, job_id=job_id, user_id=principal.user_id
                 )
-                return to_job_view(job).model_dump(mode="json")
+                view = to_job_view(job).model_dump(mode="json")
+            return view
         except JobNotFoundError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
 
@@ -357,7 +370,7 @@ def create_app(
                 job = await repository.mark_started(
                     session, job_id=job_id, runner_token=runner_token
                 )
-            await _publish_progress(openwebui, job, {"stage": "starting"})
+            await _publish_progress(openwebui, job, {"stage": ResearchStage.STARTING.value})
             return {"state": job.state}
         except (JobNotFoundError, InvalidStateError) as error:
             raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
@@ -388,6 +401,7 @@ def create_app(
                     session, job_id=job_id, runner_token=runner_token
                 )
             if event.event_type == "research.progress":
+                metrics.observe_progress(event.data)
                 await _publish_progress(openwebui, job, event.data)
             return {"sequence": stored.sequence}
         except (JobNotFoundError, InvalidStateError) as error:
@@ -397,6 +411,7 @@ def create_app(
     async def runner_search(
         job_id: UUID, body: SearchBody, runner_token: RunnerToken
     ) -> list[dict[str, object]]:
+        started = timer()
         try:
             async with database.session() as session, session.begin():
                 job = await repository.get_for_runner_locked(
@@ -427,16 +442,22 @@ def create_app(
                 }
                 for document in spec.context_documents
             )
+            metrics.searches.labels("private", "succeeded").inc()
             return results
         except JobNotFoundError as error:
+            metrics.searches.labels("private", "error").inc()
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
         except OpenWebUIError as error:
+            metrics.searches.labels("private", classify_error(error)).inc()
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+        finally:
+            metrics.search_duration.labels("private").observe(elapsed(started))
 
     @app.post("/internal/jobs/{job_id}/public-search")
     async def runner_public_search(
         job_id: UUID, body: PublicSearchBody, runner_token: RunnerToken
     ) -> list[dict[str, str]]:
+        started = timer()
         try:
             limit_failure: ResearchJob | None = None
             async with database.session() as session, session.begin():
@@ -462,15 +483,21 @@ def create_app(
                 message = "public search query limit exhausted"
                 await _publish_failure(openwebui, limit_failure, message)
                 raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, message)
-            return await public_search.search(
+            results = await public_search.search(
                 query=body.query,
                 max_results=body.max_results,
                 domains=body.domains,
             )
+            metrics.searches.labels("public", "succeeded").inc()
+            return results
         except JobNotFoundError as error:
+            metrics.searches.labels("public", "error").inc()
             raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from error
         except PublicSearchError as error:
+            metrics.searches.labels("public", classify_error(error)).inc()
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+        finally:
+            metrics.search_duration.labels("public").observe(elapsed(started))
 
     @app.post("/internal/jobs/{job_id}/complete")
     async def runner_complete(
@@ -503,11 +530,15 @@ def create_app(
             upload_id = uuid4()
             stored = {}
             for name, (content, media_type) in artifacts.items():
-                stored[name] = await artifact_store.put(
-                    f"{settings.artifact_jobs_prefix}/{job_id}/attempts/{attempt}/{upload_id}/{name}",
-                    content,
-                    media_type,
-                )
+                try:
+                    stored[name] = await artifact_store.put(
+                        f"{settings.artifact_jobs_prefix}/{job_id}/attempts/{attempt}/{upload_id}/{name}",
+                        content,
+                        media_type,
+                    )
+                except Exception:
+                    metrics.artifact_write_failures.inc()
+                    raise
             async with database.session() as session, session.begin():
                 job = await repository.get_for_runner_locked(
                     session, job_id=job_id, runner_token=runner_token
@@ -573,6 +604,7 @@ def create_app(
     async def proxy_chat_completion(
         job_id: UUID, payload: dict[str, Any], runner_token: RunnerToken
     ) -> Response:
+        request_started = timer()
         estimated_input = _estimate_input_tokens(payload)
         context_error: str | None = None
         context_failure: ResearchJob | None = None
@@ -589,6 +621,7 @@ def create_app(
                 )
             }
             requested_model = str(payload.get("model") or model_roles.smart)
+            role = model_role(job, requested_model)
             capability = capabilities.get(requested_model)
             if capability is None:
                 raise HTTPException(
@@ -646,14 +679,20 @@ def create_app(
                     default_model=model_roles.smart,
                 )
             except OpenWebUIError as error:
+                metrics.llm_requests.labels("chat", role, classify_error(error)).inc()
+                metrics.llm_duration.labels("chat", role).observe(elapsed(request_started))
                 raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
 
             async def stream_completion() -> AsyncIterator[bytes]:
                 captured = bytearray()
+                result = "succeeded"
                 try:
                     async for chunk in response.aiter_bytes():
                         captured.extend(chunk)
                         yield chunk
+                except Exception as error:
+                    result = classify_error(error)
+                    raise
                 finally:
                     await response.aclose()
                     input_tokens, output_tokens, estimated_usage = _stream_usage(
@@ -676,6 +715,8 @@ def create_app(
                             job_id=str(job_id),
                             error=str(error),
                         )
+                    metrics.llm_requests.labels("chat", role, result).inc()
+                    metrics.llm_duration.labels("chat", role).observe(elapsed(request_started))
 
             return StreamingResponse(
                 stream_completion(),
@@ -690,6 +731,8 @@ def create_app(
                 default_model=model_roles.smart,
             )
         except OpenWebUIError as error:
+            metrics.llm_requests.labels("chat", role, classify_error(error)).inc()
+            metrics.llm_duration.labels("chat", role).observe(elapsed(request_started))
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
         data = response.json()
         provider_usage = data.get("usage", {}) if isinstance(data, dict) else {}
@@ -712,12 +755,15 @@ def create_app(
                 output_tokens=output_tokens,
                 estimated_token_calls=int(estimated_usage),
             )
+        metrics.llm_requests.labels("chat", role, "succeeded").inc()
+        metrics.llm_duration.labels("chat", role).observe(elapsed(request_started))
         return JSONResponse(content=data)
 
     @app.post("/internal/jobs/{job_id}/openai/v1/embeddings")
     async def proxy_embeddings(
         job_id: UUID, payload: dict[str, Any], runner_token: RunnerToken
     ) -> Response:
+        request_started = timer()
         job = await _runner_job(database, repository, job_id, runner_token)
         _ensure_active(job)
         try:
@@ -727,9 +773,13 @@ def create_app(
                 model=settings.embedding_model,
                 batch_size=settings.embedding_batch_size,
             )
+            metrics.llm_requests.labels("embedding", "embedding", "succeeded").inc()
             return JSONResponse(content=data)
         except OpenWebUIError as error:
+            metrics.llm_requests.labels("embedding", "embedding", classify_error(error)).inc()
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+        finally:
+            metrics.llm_duration.labels("embedding", "embedding").observe(elapsed(request_started))
 
     return app
 
@@ -880,12 +930,12 @@ async def _publish_completion(
 
 
 def _progress_description(data: dict[str, object]) -> str:
-    stage = str(data.get("stage", "researching"))
+    stage = str(data.get("stage", ResearchStage.RESEARCHING.value))
     activity = str(data.get("activity") or "")
 
-    if stage == "starting":
+    if stage == ResearchStage.STARTING.value:
         return "Starting deep research…"
-    if stage == "retrieval":
+    if stage == ResearchStage.RETRIEVAL.value:
         context_parts: list[str] = []
         for key, singular, plural in (
             ("knowledge_sources", "Knowledge collection", "Knowledge collections"),
@@ -898,7 +948,7 @@ def _progress_description(data: dict[str, object]) -> str:
         if context_parts:
             return f"Preparing research context · {', '.join(context_parts)}"
         return "Preparing research context…"
-    if stage == "planning" and activity == "research_plan_ready":
+    if stage == ResearchStage.PLANNING.value and activity == "research_plan_ready":
         breadth = _progress_integer(data.get("breadth"))
         depth = _progress_integer(data.get("depth"))
         details: list[str] = []
@@ -907,11 +957,11 @@ def _progress_description(data: dict[str, object]) -> str:
         if depth is not None and depth > 1:
             details.append("follow-up searches enabled")
         return "Research plan ready" + (f" · {' · '.join(details)}" if details else "")
-    if stage == "planning":
+    if stage == ResearchStage.PLANNING.value:
         return "Planning research questions and sources…"
-    if stage == "writing":
+    if stage == ResearchStage.WRITING.value:
         return "Writing the report from gathered evidence…"
-    if stage == "finalizing":
+    if stage == ResearchStage.FINALIZING.value:
         return "Creating report and source artifacts…"
 
     if activity == "pages_read":

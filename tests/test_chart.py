@@ -65,3 +65,13 @@ def test_chart_supports_value_from_environment() -> None:
     assert ".Values.migration.extraEnv" in migration
     assert ".Values.functionSync.extraEnv" in function_sync
     assert ".Values.cleanup.extraEnv" in cleanup
+
+
+def test_service_monitor_is_opt_in() -> None:
+    root = ROOT / "chart/open-webui-gpt-researcher"
+    values = (root / "values.yaml").read_text()
+    service_monitor = (root / "templates/servicemonitor.yaml").read_text()
+
+    assert "serviceMonitor:\n    enabled: false" in values
+    assert ".Values.api.serviceMonitor.enabled" in service_monitor
+    assert "path: /metrics" in service_monitor

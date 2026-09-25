@@ -108,7 +108,7 @@
     "fullnameOverride": {"type": "string"},
     "api": {
       "type": "object",
-      "required": ["enabled", "replicaCount", "image", "imagePullSecrets", "service", "serviceAccount", "env", "envFrom", "extraEnv", "resources", "podSecurityContext", "containerSecurityContext", "podLabels", "podAnnotations", "nodeSelector", "tolerations", "affinity", "extraVolumes", "extraVolumeMounts"],
+      "required": ["enabled", "replicaCount", "image", "imagePullSecrets", "service", "serviceMonitor", "serviceAccount", "env", "envFrom", "extraEnv", "resources", "podSecurityContext", "containerSecurityContext", "podLabels", "podAnnotations", "nodeSelector", "tolerations", "affinity", "extraVolumes", "extraVolumeMounts"],
       "properties": {
         "enabled": {"type": "boolean"},
         "replicaCount": {"type": "integer", "minimum": 1},
@@ -120,6 +120,17 @@
           "properties": {
             "type": {"type": "string", "minLength": 1},
             "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "interval", "scrapeTimeout", "labels"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interval": {"type": "string", "minLength": 1},
+            "scrapeTimeout": {"type": "string", "minLength": 1},
+            "labels": {"$ref": "#/$defs/stringMap"}
           }
         },
         "serviceAccount": {"$ref": "#/$defs/serviceAccount"},

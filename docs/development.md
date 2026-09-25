@@ -159,6 +159,9 @@ When Kubernetes schemas are available, also validate rendered resources with `ku
 - Keep Python dependencies locked in `uv.lock`.
 - Preserve Docker layer caching by installing locked dependencies before copying frequently
   changing application source.
+- CI imports the published registry build cache before its branch-scoped GitHub Actions cache.
+  It builds the application `smoke-test` target with a cache-only output, which validates the
+  entrypoint without loading the large Chromium image into the runner's Docker daemon.
 - GPT Researcher is pinned to an exact source revision; review upstream changes before advancing
   it.
 

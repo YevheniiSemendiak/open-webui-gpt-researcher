@@ -9,7 +9,7 @@ import httpx
 import structlog
 
 from .config import Settings
-from .domain import JobState, RunnerCompletion, RunnerJobSpec
+from .domain import JobState, ResearchStage, RunnerCompletion, RunnerJobSpec
 from .engines import ResearchEngine
 
 log = structlog.get_logger()
@@ -92,7 +92,7 @@ class Runner:
         await self._report_progress(
             "research.progress",
             {
-                "stage": "retrieval",
+                "stage": ResearchStage.RETRIEVAL.value,
                 "file_sources": sum(source.kind == "file" for source in spec.sources),
                 "knowledge_sources": sum(source.kind == "collection" for source in spec.sources),
                 "context_items": len(spec.context_documents),

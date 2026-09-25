@@ -9,6 +9,7 @@ from .config import Settings
 from .db import AdvisoryLockLease, Database
 from .domain import JobState
 from .executors import DispatchStatus, Executor
+from .metrics import ResearchMetrics
 from .repository import JobRepository
 
 log = structlog.get_logger()
@@ -24,11 +25,13 @@ class Controller:
         database: Database,
         repository: JobRepository,
         executor: Executor,
+        metrics: ResearchMetrics,
     ) -> None:
         self.settings = settings
         self.database = database
         self.repository = repository
         self.executor = executor
+        self.metrics = metrics
 
     async def run_forever(self) -> None:
         log.info(
@@ -41,16 +44,20 @@ class Controller:
                     self.settings.controller_leader_lock_id
                 ) as lease:
                     if not lease.acquired:
+                        self.metrics.controller_leader.set(0)
                         await asyncio.sleep(self.settings.controller_leader_retry_seconds)
                         continue
+                    self.metrics.controller_leader.set(1)
                     log.info(
                         "controller.leadership_acquired",
                         backend_pid=lease.backend_pid,
                     )
                     await self._dispatch_forever(lease=lease)
             except asyncio.CancelledError:
+                self.metrics.controller_leader.set(0)
                 raise
             except Exception:
+                self.metrics.controller_leader.set(0)
                 log.exception("controller.leader_election_failed")
                 await asyncio.sleep(self.settings.controller_leader_retry_seconds)
 
@@ -114,6 +121,7 @@ class Controller:
                 )
             if changed:
                 reconciled += 1
+                self.metrics.reconciliations.labels("dispatch", action).inc()
                 log.info(
                     "controller.dispatch_reconciled",
                     job_id=str(dispatch.id),
@@ -160,6 +168,7 @@ class Controller:
                 )
             if changed:
                 reconciled += 1
+                self.metrics.reconciliations.labels("stale_runner", action).inc()
                 log.warning(
                     "controller.stale_runner_reconciled",
                     job_id=str(runner.id),
@@ -185,6 +194,7 @@ class Controller:
                 attempt=claim.attempt,
             )
         except Exception as error:
+            self.metrics.dispatches.labels("failed").inc()
             log.exception("controller.dispatch_failed", job_id=str(claim.id))
             async with self.database.session() as session, session.begin():
                 await self.repository.mark_failed(
@@ -194,5 +204,6 @@ class Controller:
                     error=f"runner dispatch failed: {error}",
                 )
         else:
+            self.metrics.dispatches.labels("succeeded").inc()
             log.info("controller.dispatched", job_id=str(claim.id))
         return True

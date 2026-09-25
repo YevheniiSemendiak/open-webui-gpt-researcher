@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && sed -i "/name = \"open-webui-gpt-researcher\"/{n;s/^version = \".*\"/version = \"${VERSION}\"/;}" uv.lock \
     && uv sync --frozen --no-dev --no-editable
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.13-slim-bookworm AS runtime-base
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes chromium \
     && rm -rf /var/lib/apt/lists/* \
@@ -43,3 +43,8 @@ USER 10001:10001
 EXPOSE 8090
 ENTRYPOINT ["open-webui-gpt-researcher"]
 CMD ["api"]
+
+FROM runtime-base AS smoke-test
+RUN open-webui-gpt-researcher --help
+
+FROM runtime-base AS runtime

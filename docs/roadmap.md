@@ -3,8 +3,8 @@
 ## Before the first production rollout
 
 - Add integration tests against real Open WebUI, PostgreSQL, MinIO, and a Kubernetes test cluster.
-- Add metrics, traces, audit events, and dashboards for queue age, runtime, failures, tokens, and
-  retriever activity.
+- Add distributed traces and audit events that complement the Prometheus metrics exposed by the
+  research API.
 - Perform prompt-injection and cross-user authorization testing with realistic Knowledge data.
 
 ## UX and capability follow-ups

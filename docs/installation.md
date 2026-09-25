@@ -262,6 +262,32 @@ Research Jobs are always available when the gateway runs and have no separate `e
 They use a non-root, read-only security context, scoped per-job credentials, resource limits,
 deadlines, and TTL cleanup.
 
+### Prometheus monitoring
+
+The API exposes unauthenticated Prometheus metrics at `/metrics`; keep that endpoint private and
+restrict it with Kubernetes networking policy. Durable job state, rolling completion counts,
+lifecycle-duration quantiles, accounted usage, and artifact totals are periodically derived from
+PostgreSQL. Every API replica therefore exposes the same durable snapshot; HA dashboards must use
+`max`, rather than `sum`, across replicas for these gauges. Dispatch, reconciliation, progress,
+search, model, embedding, and HTTP observations remain per-process counters or histograms and are
+summed across replicas. User IDs, chat IDs, job IDs, prompts, queries, URLs, and raw errors are not
+metric labels.
+
+When Prometheus Operator CRDs are installed, enable the chart-managed `ServiceMonitor`:
+
+```yaml
+api:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+```
+
+Runner Jobs are intentionally not scraped. Their short-lived work is recorded by the API as they
+report progress, usage, and completion; Kubernetes and container metrics remain available through
+kube-state-metrics and the kubelet.
+
 ### SearXNG
 
 SearXNG is opt-in. With `searxng.enabled=true`, the chart deploys an internal Deployment and
