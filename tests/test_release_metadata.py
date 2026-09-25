@@ -68,3 +68,20 @@ def test_publish_workflow_does_not_use_checked_in_versions() -> None:
     assert "cache-to: type=gha" not in workflow
     assert '--version "$CHART_VERSION"' in workflow
     assert '--app-version "$CHART_VERSION"' in workflow
+
+
+def test_ci_build_uses_shared_caches_without_loading_the_application_image() -> None:
+    workflow = (ROOT / ".github/workflows/tests.yaml").read_text()
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert "target: smoke-test" in workflow
+    assert "outputs: type=cacheonly" in workflow
+    assert "load: true" not in workflow
+    assert (
+        "type=registry,ref=ghcr.io/yevheniisemendiak/open-webui-gpt-researcher:buildcache"
+        in workflow
+    )
+    assert "type=gha,scope=buildkit" in workflow
+    assert "FROM runtime-base AS smoke-test" in dockerfile
+    assert "RUN open-webui-gpt-researcher --help" in dockerfile
+    assert dockerfile.rstrip().endswith("FROM runtime-base AS runtime")
