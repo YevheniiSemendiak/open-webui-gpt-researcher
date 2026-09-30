@@ -3,7 +3,11 @@ set -eu
 
 ip link show tun0 >/dev/null 2>&1
 pidof sockd >/dev/null 2>&1
+pidof tinyproxy >/dev/null 2>&1
 pidof openvpn >/dev/null 2>&1
+
+ss -ltn | grep -q ':1080 '
+ss -ltn | grep -q ':8118 '
 
 uplink_interface="$(ip -4 route show default | awk 'NR == 1 {for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
 test -n "$uplink_interface"

@@ -81,7 +81,9 @@ docker compose run --rm function-sync
 ## Optional proxy overlay
 
 `docker-compose.proxy.yaml` exists to test search and crawling through an externally routed
-network path. It adds the OpenVPN/SOCKS helper and replaces the SearXNG settings file with the
+network path. It adds the OpenVPN proxy helper (SOCKS5 on `1080`, HTTP CONNECT on `8118`), enables
+Open WebUI native SearXNG search through the HTTP proxy for result-page loading, and replaces the
+SearXNG settings file with the
 gitignored `dev/searxng/settings.local.yml` unless `SEARXNG_SETTINGS_FILE` is set.
 
 Use `make run-proxy` and `make stop-proxy`. Credential injection and operator-facing setup are
