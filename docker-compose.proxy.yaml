@@ -35,6 +35,25 @@ services:
         target: /etc/searxng/settings.yml
         read_only: true
 
+  open-webui:
+    depends_on:
+      vpn-proxy:
+        condition: service_healthy
+    environment:
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://searxng:8080/search
+      SEARXNG_LANGUAGE: all
+      WEB_SEARCH_RESULT_COUNT: ${WEB_SEARCH_RESULT_COUNT:-5}
+      WEB_SEARCH_CONCURRENT_REQUESTS: ${WEB_SEARCH_CONCURRENT_REQUESTS:-2}
+      WEB_SEARCH_TRUST_ENV: "true"
+      WEB_LOADER_ENGINE: safe_web
+      BYPASS_WEB_SEARCH_WEB_LOADER: "false"
+      BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: "false"
+      HTTP_PROXY: http://vpn-proxy:8118
+      HTTPS_PROXY: http://vpn-proxy:8118
+      NO_PROXY: localhost,127.0.0.1,postgres,minio,searxng,api,vpn-proxy,open-webui
+
   api:
     depends_on:
       vpn-proxy:

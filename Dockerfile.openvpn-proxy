@@ -2,11 +2,12 @@ ARG VERSION=0.0.0.dev0
 
 FROM alpine:3.24.2
 
-RUN apk add --no-cache ca-certificates dante-server iproute2 openvpn tini
+RUN apk add --no-cache ca-certificates dante-server iproute2 openvpn tini tinyproxy
 
 COPY dev/openvpn-proxy/entrypoint.sh /usr/local/bin/openvpn-proxy
 COPY dev/openvpn-proxy/healthcheck.sh /usr/local/bin/openvpn-proxy-healthcheck
 COPY dev/openvpn-proxy/sockd.conf /etc/sockd.conf
+COPY dev/openvpn-proxy/tinyproxy.conf /etc/tinyproxy.conf
 
 RUN chmod 0755 /usr/local/bin/openvpn-proxy /usr/local/bin/openvpn-proxy-healthcheck
 

@@ -4,6 +4,7 @@ set -eu
 config_file="${OPENVPN_CONFIG_FILE:-/run/secrets/openvpn-config}"
 auth_file="${OPENVPN_AUTH_FILE:-/run/secrets/openvpn-auth}"
 sockd_pid=""
+tinyproxy_pid=""
 
 test -s "$config_file"
 test -s "$auth_file"
@@ -37,6 +38,10 @@ cleanup() {
         kill "$sockd_pid" 2>/dev/null || true
         wait "$sockd_pid" 2>/dev/null || true
     fi
+    if [ -n "$tinyproxy_pid" ]; then
+        kill "$tinyproxy_pid" 2>/dev/null || true
+        wait "$tinyproxy_pid" 2>/dev/null || true
+    fi
     wait "$openvpn_pid" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
@@ -67,10 +72,26 @@ done
 sockd -f /etc/sockd.conf &
 sockd_pid=$!
 
-while kill -0 "$openvpn_pid" 2>/dev/null && kill -0 "$sockd_pid" 2>/dev/null; do
-    # Dante is bound to tun0, so it cannot fall back to the pod's ordinary
-    # interface. Exit as soon as the tunnel disappears so the supervisor also
-    # tears down the proxy process and restarts the container fail-closed.
+tun_address="$(ip -o -4 addr show dev tun0 scope global | awk 'NR == 1 {split($4, address, "/"); print address[1]}')"
+if [ -z "$tun_address" ]; then
+    echo "Unable to discover the VPN tunnel IPv4 address" >&2
+    exit 1
+fi
+
+# Bind Tinyproxy's outbound sockets to the tunnel address. This gives the HTTP
+# CONNECT listener the same fail-closed property as Dante's `external: tun0`:
+# it cannot silently fall back to the pod's ordinary interface.
+tinyproxy_runtime_config=/tmp/tinyproxy.conf
+cp /etc/tinyproxy.conf "$tinyproxy_runtime_config"
+printf '\nBind %s\n' "$tun_address" >>"$tinyproxy_runtime_config"
+tinyproxy -d -c "$tinyproxy_runtime_config" &
+tinyproxy_pid=$!
+
+while kill -0 "$openvpn_pid" 2>/dev/null \
+    && kill -0 "$sockd_pid" 2>/dev/null \
+    && kill -0 "$tinyproxy_pid" 2>/dev/null; do
+    # Both proxies bind outbound traffic to tun0. Exit as soon as the tunnel
+    # disappears so the supervisor tears them down and restarts fail-closed.
     if ! ip link show tun0 >/dev/null 2>&1; then
         exit 1
     fi

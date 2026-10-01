@@ -113,7 +113,7 @@ chat that already contains private context.
 ## Optional proxy hook for local deployment
 
 Direct egress is the default. The optional `docker-compose.proxy.yaml` overlay starts an OpenVPN
-client with an internal SOCKS5 proxy and uses the gitignored
+client with internal SOCKS5 and HTTP CONNECT proxies and uses the gitignored
 `dev/searxng/settings.local.yml` by default.
 
 Set:
@@ -135,8 +135,10 @@ make run-proxy
 `/etc/searxng/settings.yml` in the container. Credentials and client configuration are mounted at
 runtime and are not included in an image.
 
-The bundled proxy is fail-closed: its SOCKS server sends outbound traffic only through `tun0`,
-starts only after that interface exists, and exits if either OpenVPN or the tunnel disappears. A
+The bundled proxy exposes SOCKS5 on port `1080` for SearXNG and research runners, and HTTP CONNECT
+on port `8118` for clients such as Open WebUI's native web loader. Both proxy processes bind
+outbound sockets to `tun0`, start only after that interface exists, and exit if either OpenVPN or
+the tunnel disappears. A
 non-privileged Kubernetes deployment therefore needs `NET_ADMIN` and access to `/dev/net/tun`;
 using a privileged container only hides that device setup and grants substantially broader access.
 The entrypoint automatically preserves the pre-VPN gateway and directly connected subnet. Routed
@@ -147,6 +149,13 @@ commonly assigns pods a `/32`—so production deployments should supply those ne
 Production deployments can set `researchJob.env.CRAWLER_PROXY_URL` to an externally managed proxy
 or VPN gateway and configure SearXNG's `outgoing.proxies` to use it. The researcher chart does not
 deploy network egress infrastructure.
+
+For Open WebUI native web search, point `SEARXNG_QUERY_URL` at the internal SearXNG `/search`
+endpoint. Set `HTTP_PROXY` and `HTTPS_PROXY` to the proxy's HTTP listener, enable
+`WEB_SEARCH_TRUST_ENV`, and include SearXNG plus other internal dependencies in `NO_PROXY`.
+SearXNG continues to use the SOCKS5 listener. Open WebUI stores Web Search settings in its database;
+an administrator-saved value takes precedence over an environment default and must be checked in
+the Admin UI after deployment.
 
 ## Kubernetes installation
 
