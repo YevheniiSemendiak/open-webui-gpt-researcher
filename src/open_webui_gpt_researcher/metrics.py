@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, Response
 from prometheus_client import (
@@ -21,6 +22,9 @@ from sqlalchemy import case, func, select
 
 from .db import Database, ResearchArtifact, ResearchJob
 from .domain import JobState, ResearchStage
+
+if TYPE_CHECKING:
+    from .openwebui import OpenWebUIClient
 
 STATE_REFRESH_SECONDS = 15
 RECENT_WINDOWS = {"1h": timedelta(hours=1), "24h": timedelta(hours=24)}
@@ -173,6 +177,11 @@ class ResearchMetrics:
         self.artifact_write_failures = Counter(
             "deep_research_artifact_write_failures_total",
             "Artifact writes that failed before being recorded in PostgreSQL.",
+            registry=self.registry,
+        )
+        self.models_available = Gauge(
+            "deep_research_models_available",
+            "Number of models currently exposed by Open WebUI.",
             registry=self.registry,
         )
 
@@ -357,10 +366,22 @@ class ResearchMetrics:
         age = 0.0 if oldest_pending is None else _seconds_between(now, oldest_pending)
         self.oldest_pending_age.set(age)
 
-    async def refresh_forever(self, database: Database) -> None:
+    async def refresh_models_available(self, openwebui: OpenWebUIClient) -> None:
+        try:
+            available = len(await openwebui.list_models())
+        except Exception:
+            available = 0
+        self.models_available.set(available)
+
+    async def refresh_forever(
+        self,
+        database: Database,
+        openwebui: OpenWebUIClient,
+    ) -> None:
         while True:
             with suppress(Exception):
                 await self.refresh_durable_state(database)
+            await self.refresh_models_available(openwebui)
             await asyncio.sleep(STATE_REFRESH_SECONDS)
 
 
