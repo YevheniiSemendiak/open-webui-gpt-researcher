@@ -139,7 +139,9 @@ The bundled proxy exposes SOCKS5 on port `1080` for SearXNG and research runners
 on port `8118` for clients such as Open WebUI's native web loader. Both proxy processes bind
 outbound sockets to `tun0`, start only after that interface exists, and exit if either OpenVPN or
 the tunnel disappears. A
-non-privileged Kubernetes deployment therefore needs `NET_ADMIN` and access to `/dev/net/tun`;
+non-privileged Kubernetes deployment therefore needs `NET_ADMIN`, `SETUID`, `SETGID`, and `KILL`
+capabilities plus access to `/dev/net/tun`. `KILL` lets the root supervisor monitor and terminate
+the HTTP proxy after it drops privileges to the `nobody` user;
 using a privileged container only hides that device setup and grants substantially broader access.
 The entrypoint automatically preserves the pre-VPN gateway and directly connected subnet. Routed
 pod or service networks cannot always be inferred from a container interface—for example, Calico
