@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 from prometheus_client import generate_latest
@@ -59,6 +60,22 @@ def test_job_observations_and_bounded_labels() -> None:
 def test_error_classification() -> None:
     assert classify_error(TimeoutError()) == "timeout"
     assert classify_error(RuntimeError()) == "error"
+
+
+async def test_models_available() -> None:
+    metrics = ResearchMetrics()
+    openwebui = AsyncMock()
+    openwebui.list_models.return_value = [{"id": "one"}, {"id": "two"}]
+
+    await metrics.refresh_models_available(openwebui)
+
+    output = generate_latest(metrics.registry).decode()
+    assert "deep_research_models_available 2.0" in output
+
+    openwebui.list_models.side_effect = RuntimeError
+    await metrics.refresh_models_available(openwebui)
+    output = generate_latest(metrics.registry).decode()
+    assert "deep_research_models_available 0.0" in output
 
 
 async def test_durable_state_refresh(

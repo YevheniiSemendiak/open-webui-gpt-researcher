@@ -105,7 +105,8 @@ def create_app(
             await database.create_all()
         dispatcher_task: asyncio.Task[None] | None = None
         metrics_task = asyncio.create_task(
-            metrics.refresh_forever(database), name="research-metrics-refresh"
+            metrics.refresh_forever(database, openwebui),
+            name="research-metrics-refresh",
         )
         if start_controller:
             dispatcher = Controller(
