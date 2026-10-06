@@ -36,7 +36,7 @@ services:
       retries: 20
 
   firecrawl-playwright:
-    image: ghcr.io/firecrawl/playwright-service:latest@sha256:645387a4e7ba418ba5125e98185ef5ce3e597d537465048f5345eb604102d68f
+    image: ghcr.io/firecrawl/playwright-service:latest@sha256:717699bf8a61d94451926c810d19ca1d36278192907e307bf5229a558b08fcc6
     environment:
       PORT: 3000
       MAX_CONCURRENT_PAGES: ${MAX_CONCURRENT_PAGES:-5}
