@@ -39,7 +39,7 @@ x-research-environment: &research-environment
 
 services:
   postgres:
-    image: postgres:18.6-bookworm
+    image: postgres:18.7-bookworm
     environment:
       POSTGRES_DB: research
       POSTGRES_USER: research
