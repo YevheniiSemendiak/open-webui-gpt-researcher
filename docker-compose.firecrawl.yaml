@@ -45,7 +45,7 @@ services:
       - /tmp/.cache:noexec,nosuid,size=1g
 
   firecrawl:
-    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.775-production@sha256:02729d85179684ecf900ef82999c671cbf3cb045577c27d1bb3099a6ba7c3aef}
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.849-production@sha256:e584c9bd92a2174a31c29b4c522793f4cb7bc37d781aad3701e297704fa1f6d6}
     command: ["node", "dist/src/index.js"]
     environment:
       <<: *firecrawl-environment
@@ -69,7 +69,7 @@ services:
       - "127.0.0.1:${FIRECRAWL_PORT:-3002}:3002"
 
   firecrawl-worker:
-    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.775-production@sha256:02729d85179684ecf900ef82999c671cbf3cb045577c27d1bb3099a6ba7c3aef}
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.849-production@sha256:e584c9bd92a2174a31c29b4c522793f4cb7bc37d781aad3701e297704fa1f6d6}
     command: ["node", "dist/src/services/queue-worker.js"]
     environment:
       <<: *firecrawl-environment
@@ -84,7 +84,7 @@ services:
         condition: service_started
 
   firecrawl-nuq-worker:
-    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.775-production@sha256:02729d85179684ecf900ef82999c671cbf3cb045577c27d1bb3099a6ba7c3aef}
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.849-production@sha256:e584c9bd92a2174a31c29b4c522793f4cb7bc37d781aad3701e297704fa1f6d6}
     command: ["node", "dist/src/services/worker/nuq-worker.js"]
     environment:
       <<: *firecrawl-environment
@@ -99,7 +99,7 @@ services:
         condition: service_started
 
   firecrawl-nuq-prefetch-worker:
-    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.775-production@sha256:02729d85179684ecf900ef82999c671cbf3cb045577c27d1bb3099a6ba7c3aef}
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:2.11.849-production@sha256:e584c9bd92a2174a31c29b4c522793f4cb7bc37d781aad3701e297704fa1f6d6}
     command: ["node", "dist/src/services/worker/nuq-prefetch-worker.js"]
     environment:
       <<: *firecrawl-environment
